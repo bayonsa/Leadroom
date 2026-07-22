@@ -31,9 +31,9 @@ The Wizard provides:
 3. Optional WebView2 and Ollama installation through `winget`
 4. Optional verified `ollama pull` for `llama3.2:3b`
 5. Optional WSL/PostgreSQL/PostGIS/OpenStreetMap setup for Full Local
-
-The preparation page reports the active component while bootstrap runs. Ollama model downloads stream their current layer percentage and transferred size into the installer; package-manager and Full Local operations show named stage progress when their underlying tools do not expose a reliable overall percentage. Detailed events remain available in `%LOCALAPPDATA%\Leadroom\logs\install.log`.
 6. Start Menu and optional Desktop shortcuts
+
+The preparation page reports the active component while bootstrap runs. Ollama model downloads stream their current layer percentage and transferred size into the installer; package-manager and Full Local operations show named stage progress when their underlying tools do not expose a reliable overall percentage. Cancel remains available during preparation, signals active model downloads to stop, and lets Setup roll back the installation. Detailed events remain available in `%LOCALAPPDATA%\Leadroom\logs\install.log`.
 
 Upgrades preserve an existing `storage.json`. Uninstall removes application files and asks whether workspace data and downloads should be retained.
 
@@ -54,9 +54,12 @@ Other parameters are `/INSTALLMODE=full`, `/SETUP_LOCAL_DATA=1`, and the test-on
 
 ```powershell
 .\scripts\test-installer.ps1
+.\scripts\test-installer-cancel.ps1
 ```
 
 The smoke test temporarily backs up the current Leadroom bootstrap folder, silently installs to `build`, starts the installed executable on a dedicated localhost port, checks `/api/v1/health`, runs the uninstaller, and restores the original bootstrap folder and Ollama environment setting.
+
+The cancellation test begins a model download in an isolated folder, activates the installer's `Cancel setup` button, and verifies that Setup exits unsuccessfully, the bootstrap process stops, and no application executable remains installed.
 
 ## Publication Blockers
 

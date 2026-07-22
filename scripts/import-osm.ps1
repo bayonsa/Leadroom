@@ -1,11 +1,19 @@
 param(
     [string]$Region = "great-britain",
     [string]$DataDirectory = "D:\LeadroomData\osm",
+    [string]$ResourceDirectory = "",
+    [string]$UpdateScriptPath = "",
     [switch]$Refresh
 )
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+if ([string]::IsNullOrWhiteSpace($ResourceDirectory)) {
+    $ResourceDirectory = Join-Path $root "infra\osm"
+}
+if ([string]::IsNullOrWhiteSpace($UpdateScriptPath)) {
+    $UpdateScriptPath = Join-Path $PSScriptRoot "setup-local-updates.ps1"
+}
 $pbf = Join-Path $DataDirectory "$Region-latest.osm.pbf"
 $url = "https://download.geofabrik.de/europe/$Region-latest.osm.pbf"
 New-Item -ItemType Directory -Force -Path $DataDirectory | Out-Null
@@ -29,8 +37,8 @@ if ($Refresh -and (Test-Path -LiteralPath $pbf)) {
     Write-Host "Using existing snapshot $pbf"
 }
 
-$wslLua = Convert-ToWslPath (Join-Path $root "infra\osm\leadroom.lua")
-$wslSql = Convert-ToWslPath (Join-Path $root "infra\osm\post-import.sql")
+$wslLua = Convert-ToWslPath (Join-Path $ResourceDirectory "leadroom.lua")
+$wslSql = Convert-ToWslPath (Join-Path $ResourceDirectory "post-import.sql")
 
 $cluster = @((wsl -d Ubuntu -u root -- pg_lsclusters --no-header | Select-Object -First 1) -split "\s+")
 if ($cluster.Count -lt 2) { throw "No PostgreSQL cluster was found in WSL." }
@@ -42,6 +50,6 @@ wsl -d Ubuntu -u postgres -- psql -d leadroom_osm -f $wslSql
 wsl -d Ubuntu -u postgres -- osm2pgsql-replication init -d leadroom_osm --osm-file $wslPbf
 wsl -d Ubuntu -u postgres -- psql -d leadroom_osm -c "INSERT INTO leadroom_osm_metadata(key, value) VALUES ('region', '$Region') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;"
 
-& (Join-Path $PSScriptRoot "setup-local-updates.ps1")
+& $UpdateScriptPath -ResourceDirectory $ResourceDirectory
 
 Write-Host "OSM import completed with incremental updates enabled."

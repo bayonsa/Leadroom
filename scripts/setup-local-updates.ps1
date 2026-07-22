@@ -1,14 +1,21 @@
+param(
+    [string]$ResourceDirectory = ""
+)
+
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
+if ([string]::IsNullOrWhiteSpace($ResourceDirectory)) {
+    $ResourceDirectory = Join-Path $root "infra\osm"
+}
 
 function Convert-ToWslPath([string]$Path) {
     $escaped = $Path.Replace('\', '\\')
     return (wsl -- wslpath -a $escaped).Trim()
 }
 
-$updateScript = Convert-ToWslPath (Join-Path $root "infra\osm\leadroom-osm-update.sh")
-$service = Convert-ToWslPath (Join-Path $root "infra\osm\leadroom-osm-update.service")
-$timer = Convert-ToWslPath (Join-Path $root "infra\osm\leadroom-osm-update.timer")
+$updateScript = Convert-ToWslPath (Join-Path $ResourceDirectory "leadroom-osm-update.sh")
+$service = Convert-ToWslPath (Join-Path $ResourceDirectory "leadroom-osm-update.service")
+$timer = Convert-ToWslPath (Join-Path $ResourceDirectory "leadroom-osm-update.timer")
 
 wsl -d Ubuntu -u root -- install -m 0755 $updateScript /usr/local/sbin/leadroom-osm-update
 wsl -d Ubuntu -u root -- install -m 0644 $service /etc/systemd/system/leadroom-osm-update.service

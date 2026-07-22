@@ -3,6 +3,8 @@ param(
     [string]$Mode = "Standard",
     [Parameter(Mandatory = $true)]
     [string]$InstallRoot,
+    [string]$HelperRoot,
+    [string]$ResourceRoot,
     [Parameter(Mandatory = $true)]
     [string]$DataRoot,
     [Parameter(Mandatory = $true)]
@@ -16,7 +18,8 @@ param(
     [switch]$ForceStorage,
     [switch]$PlanOnly,
     [string]$StatusPath,
-    [string]$CompletionPath
+    [string]$CompletionPath,
+    [string]$CancelPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,6 +29,8 @@ Add-Type -AssemblyName System.Net.Http
 $bootstrapRoot = Join-Path $env:LOCALAPPDATA "Leadroom"
 $logDirectory = Join-Path $bootstrapRoot "logs"
 $logPath = Join-Path $logDirectory "install.log"
+$modelDirectoryChanged = $false
+$previousModelDirectory = $null
 
 function Write-InstallerStatus(
     [int]$Percent,
@@ -47,12 +52,29 @@ function Complete-InstallerBootstrap([int]$ExitCode) {
     }
 }
 
+function Assert-InstallerNotCancelled {
+    if (-not [string]::IsNullOrWhiteSpace($CancelPath) -and (Test-Path -LiteralPath $CancelPath)) {
+        throw [OperationCanceledException]::new("Setup was cancelled by the user.")
+    }
+}
+
 trap {
     $message = $_.Exception.Message
-    Write-InstallerStatus 0 "Setup could not continue" $message
-    try { Write-InstallLog "Bootstrap failed: $message" } catch {}
-    Complete-InstallerBootstrap 1
-    exit 1
+    if ($modelDirectoryChanged) {
+        [Environment]::SetEnvironmentVariable("OLLAMA_MODELS", $previousModelDirectory, "User")
+    }
+    if ($_.Exception -is [OperationCanceledException]) {
+        Write-InstallerStatus 0 "Setup cancelled" "Stopping the current operation"
+        try { Write-InstallLog "Bootstrap cancelled by the user." } catch {}
+        Complete-InstallerBootstrap 2
+        Remove-Item -LiteralPath $CancelPath -Force -ErrorAction SilentlyContinue
+        exit 2
+    } else {
+        Write-InstallerStatus 0 "Setup could not continue" $message
+        try { Write-InstallLog "Bootstrap failed: $message" } catch {}
+        Complete-InstallerBootstrap 1
+        exit 1
+    }
 }
 
 function Write-InstallLog([string]$Message) {
@@ -122,6 +144,7 @@ function Invoke-OllamaModelPull([string]$Endpoint, [string]$ModelName) {
         $reader = [IO.StreamReader]::new($stream)
         try {
             while (-not $reader.EndOfStream) {
+                Assert-InstallerNotCancelled
                 $line = $reader.ReadLine()
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
                 $event = $line | ConvertFrom-Json
@@ -177,6 +200,7 @@ function Wait-Ollama([string]$Executable, [string]$Endpoint = "http://127.0.0.1:
     }
     $deadline = (Get-Date).AddSeconds(45)
     while ((Get-Date) -lt $deadline) {
+        Assert-InstallerNotCancelled
         Start-Sleep -Milliseconds 750
         try {
             Invoke-RestMethod -Uri "$Endpoint/api/tags" -TimeoutSec 2 | Out-Null
@@ -206,6 +230,16 @@ function Save-StorageLocator([string]$DataPath, [string]$DownloadsPath) {
 }
 
 $InstallRoot = Resolve-AbsoluteDirectory $InstallRoot "Install folder"
+$HelperRoot = if ([string]::IsNullOrWhiteSpace($HelperRoot)) {
+    Join-Path $InstallRoot "scripts"
+} else {
+    Resolve-AbsoluteDirectory $HelperRoot "Setup helper folder"
+}
+$ResourceRoot = if ([string]::IsNullOrWhiteSpace($ResourceRoot)) {
+    Join-Path $InstallRoot "infra\osm"
+} else {
+    Resolve-AbsoluteDirectory $ResourceRoot "Setup resource folder"
+}
 $DataRoot = Resolve-AbsoluteDirectory $DataRoot "Workspace data folder"
 $DownloadsRoot = Resolve-AbsoluteDirectory $DownloadsRoot "Downloads folder"
 
@@ -233,9 +267,11 @@ if ($PlanOnly) {
 }
 
 Write-InstallerStatus 5 "Checking this computer" "Validating storage space and selected components"
+Assert-InstallerNotCancelled
 Write-InstallLog "Starting Leadroom $Mode bootstrap."
 
 if (-not (Test-WebViewRuntime)) {
+    Assert-InstallerNotCancelled
     if (-not $InstallWebView) { throw "Microsoft Edge WebView2 Runtime is required to open Leadroom." }
     Write-InstallerStatus 10 "Installing WebView2" "Windows Package Manager is preparing the desktop runtime"
     Install-WingetPackage "Microsoft.EdgeWebView2Runtime" "Microsoft Edge WebView2 Runtime"
@@ -245,6 +281,7 @@ Write-InstallLog "WebView2 runtime is ready."
 
 $ollama = Find-Ollama
 if (-not $ollama -and $InstallOllama) {
+    Assert-InstallerNotCancelled
     Write-InstallerStatus 25 "Installing Ollama" "Windows Package Manager is preparing the local AI runtime"
     Install-WingetPackage "Ollama.Ollama" "Ollama"
     $env:Path = "$env:LOCALAPPDATA\Programs\Ollama;$env:Path"
@@ -258,9 +295,11 @@ if ($ollama -and ($InstallOllama -or $DownloadModel)) {
     New-Item -ItemType Directory -Force -Path $modelDirectory | Out-Null
     $previousModelDirectory = [Environment]::GetEnvironmentVariable("OLLAMA_MODELS", "User")
     [Environment]::SetEnvironmentVariable("OLLAMA_MODELS", $modelDirectory, "User")
+    $modelDirectoryChanged = $true
     $env:OLLAMA_MODELS = $modelDirectory
     Write-InstallLog "Ollama is ready and new models will be stored at $modelDirectory."
     if ($DownloadModel) {
+        Assert-InstallerNotCancelled
         Write-InstallerStatus 30 "Starting Ollama" "Preparing the recommended model download"
         $temporaryServer = $null
         $previousHost = $env:OLLAMA_HOST
@@ -292,6 +331,7 @@ if ($ollama -and ($InstallOllama -or $DownloadModel)) {
 }
 
 if ($Mode -eq "FullLocal" -and $SetupLocalData) {
+    Assert-InstallerNotCancelled
     Write-InstallerStatus 5 "Preparing local discovery" "Checking WSL2, Ubuntu, memory, and database tools"
     $memory = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
     if ($memory -lt 16GB) { throw "Full Local setup requires at least 16 GB RAM." }
@@ -301,13 +341,18 @@ if ($Mode -eq "FullLocal" -and $SetupLocalData) {
     }
     Write-InstallerStatus 10 "Building the local index" "Downloading and importing OpenStreetMap data; this can take a long time"
     Write-InstallLog "Installing the Full Local database engine."
-    & (Join-Path $InstallRoot "scripts\setup-local-data.ps1")
+    & (Join-Path $HelperRoot "setup-local-data.ps1")
     if ($LASTEXITCODE -ne 0) { throw "The Full Local database setup failed." }
-    & (Join-Path $InstallRoot "scripts\import-osm.ps1") -Region $OsmRegion -DataDirectory (Join-Path $DownloadsRoot "osm")
+    & (Join-Path $HelperRoot "import-osm.ps1") `
+        -Region $OsmRegion `
+        -DataDirectory (Join-Path $DownloadsRoot "osm") `
+        -ResourceDirectory $ResourceRoot `
+        -UpdateScriptPath (Join-Path $HelperRoot "setup-local-updates.ps1")
     if ($LASTEXITCODE -ne 0) { throw "The OpenStreetMap import failed." }
 }
 
 Write-InstallerStatus 95 "Saving workspace settings" "Recording the selected storage folders"
+Assert-InstallerNotCancelled
 Save-StorageLocator $DataRoot $DownloadsRoot
 Write-InstallLog "Leadroom bootstrap completed successfully."
 Write-InstallerStatus 100 "Leadroom is ready" "Selected components were prepared successfully"

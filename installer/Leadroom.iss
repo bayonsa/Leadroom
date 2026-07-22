@@ -25,6 +25,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 CloseApplicationsFilter=Leadroom.exe
+AllowCancelDuringInstall=yes
 OutputDir=..\dist
 OutputBaseFilename=Leadroom-Setup
 SetupIconFile=..\assets\leadroom-icon.ico
@@ -50,6 +51,17 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"; Flags: unchecked
 
 [Files]
+; These small helpers are extracted before file installation so prerequisite
+; downloads can be cancelled before Setup commits any application files.
+Source: "..\scripts\install-bootstrap.ps1"; Flags: dontcopy noencryption
+Source: "..\scripts\setup-local-data.ps1"; Flags: dontcopy noencryption
+Source: "..\scripts\import-osm.ps1"; Flags: dontcopy noencryption
+Source: "..\scripts\setup-local-updates.ps1"; Flags: dontcopy noencryption
+Source: "..\infra\osm\leadroom.lua"; Flags: dontcopy noencryption
+Source: "..\infra\osm\post-import.sql"; Flags: dontcopy noencryption
+Source: "..\infra\osm\leadroom-osm-update.sh"; Flags: dontcopy noencryption
+Source: "..\infra\osm\leadroom-osm-update.service"; Flags: dontcopy noencryption
+Source: "..\infra\osm\leadroom-osm-update.timer"; Flags: dontcopy noencryption
 Source: "..\dist\Leadroom.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\assets\leadroom-icon.ico"; DestDir: "{app}\assets"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
@@ -70,6 +82,25 @@ Name: "{autodesktop}\Leadroom"; Filename: "{app}\Leadroom.exe"; WorkingDir: "{ap
 Filename: "{app}\Leadroom.exe"; Description: "Launch Leadroom"; Flags: nowait postinstall skipifsilent
 
 [Code]
+type
+  TWindowsMessage = record
+    WindowHandle: LongWord;
+    MessageId: LongWord;
+    WParam: LongWord;
+    LParam: Longint;
+    MessageTime: LongWord;
+    PointX: Longint;
+    PointY: Longint;
+  end;
+
+function PeekMessage(var Msg: TWindowsMessage; Wnd: LongWord;
+  FilterMin, FilterMax, RemoveFlag: LongWord): Boolean;
+  external 'PeekMessageW@user32.dll stdcall';
+function TranslateMessage(var Msg: TWindowsMessage): Boolean;
+  external 'TranslateMessage@user32.dll stdcall';
+function DispatchMessage(var Msg: TWindowsMessage): Longint;
+  external 'DispatchMessageW@user32.dll stdcall';
+
 var
   ModePage: TInputOptionWizardPage;
   StoragePage: TInputDirWizardPage;
@@ -77,6 +108,22 @@ var
   BootstrapProgress: TOutputProgressWizardPage;
   BootstrapStatusPath: String;
   BootstrapCompletionPath: String;
+  BootstrapCancelPath: String;
+  BootstrapRunning: Boolean;
+  BootstrapCancelRequested: Boolean;
+  BootstrapCancelButton: TNewButton;
+
+procedure BootstrapCancelClick(Sender: TObject); forward;
+
+procedure PumpPendingMessages;
+var
+  Msg: TWindowsMessage;
+begin
+  while PeekMessage(Msg, 0, 0, 0, 1) do begin
+    TranslateMessage(Msg);
+    DispatchMessage(Msg);
+  end;
+end;
 
 function ParamValue(const Name, Default: String): String;
 begin
@@ -166,6 +213,18 @@ begin
   BootstrapProgress := CreateOutputProgressPage(
     'Preparing Leadroom',
     'Progress for each selected component appears below.');
+
+  BootstrapCancelButton := TNewButton.Create(WizardForm);
+  BootstrapCancelButton.Parent := WizardForm;
+  BootstrapCancelButton.Caption := 'Cancel setup';
+  BootstrapCancelButton.Cancel := True;
+  BootstrapCancelButton.Left := WizardForm.CancelButton.Left;
+  BootstrapCancelButton.Top := WizardForm.CancelButton.Top;
+  BootstrapCancelButton.Width := WizardForm.CancelButton.Width;
+  BootstrapCancelButton.Height := WizardForm.CancelButton.Height;
+  BootstrapCancelButton.Anchors := [akRight, akBottom];
+  BootstrapCancelButton.OnClick := @BootstrapCancelClick;
+  BootstrapCancelButton.Visible := False;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -189,19 +248,50 @@ var
 begin
   if ModePage.SelectedValueIndex = 1 then Mode := 'FullLocal' else Mode := 'Standard';
   Result := '-NoLogo -NoProfile -ExecutionPolicy Bypass -File ' +
-    PowerShellQuote(ExpandConstant('{app}\scripts\install-bootstrap.ps1')) +
+    PowerShellQuote(ExpandConstant('{tmp}\install-bootstrap.ps1')) +
     ' -Mode ' + Mode +
     ' -InstallRoot ' + PowerShellQuote(ExpandConstant('{app}')) +
+    ' -HelperRoot ' + PowerShellQuote(ExpandConstant('{tmp}')) +
+    ' -ResourceRoot ' + PowerShellQuote(ExpandConstant('{tmp}')) +
     ' -DataRoot ' + PowerShellQuote(StoragePage.Values[0]) +
     ' -DownloadsRoot ' + PowerShellQuote(StoragePage.Values[1]) +
-    ' -Model ' + PowerShellQuote('llama3.2:3b') +
+    ' -Model ' + PowerShellQuote(ParamValue('MODEL', 'llama3.2:3b')) +
     ' -StatusPath ' + PowerShellQuote(BootstrapStatusPath) +
-    ' -CompletionPath ' + PowerShellQuote(BootstrapCompletionPath);
+    ' -CompletionPath ' + PowerShellQuote(BootstrapCompletionPath) +
+    ' -CancelPath ' + PowerShellQuote(BootstrapCancelPath);
   if DependencyPage.Values[0] then Result := Result + ' -InstallWebView';
   if DependencyPage.Values[1] then Result := Result + ' -InstallOllama';
   if DependencyPage.Values[2] then Result := Result + ' -DownloadModel';
   if DependencyPage.Values[3] then Result := Result + ' -SetupLocalData';
   if ParamEnabled('FORCE_STORAGE', False) then Result := Result + ' -ForceStorage';
+end;
+
+procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
+begin
+  if not BootstrapRunning then begin
+    if BootstrapCancelRequested then Confirm := False;
+    Exit;
+  end;
+  if SaveStringToFile(BootstrapCancelPath, 'cancel', False) then begin
+    BootstrapCancelRequested := True;
+    BootstrapProgress.SetText('Cancelling setup',
+      'Stopping the current operation safely');
+    WizardForm.CancelButton.Enabled := False;
+  end;
+  Confirm := False;
+end;
+
+procedure BootstrapCancelClick(Sender: TObject);
+begin
+  if not BootstrapRunning then Exit;
+  if not SaveStringToFile(BootstrapCancelPath, 'cancel', False) then begin
+    MsgBox('Setup could not signal the current download to stop.', mbError, MB_OK);
+    Exit;
+  end;
+  BootstrapCancelRequested := True;
+  BootstrapCancelButton.Enabled := False;
+  BootstrapProgress.SetText('Cancelling setup',
+    'Stopping the current operation safely');
 end;
 
 procedure RefreshBootstrapProgress;
@@ -219,37 +309,66 @@ begin
   WizardForm.Refresh;
 end;
 
-procedure CurStepChanged(CurStep: TSetupStep);
+function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
   CompletionLines: TArrayOfString;
 begin
-  if CurStep <> ssPostInstall then Exit;
+  Result := '';
+  ExtractTemporaryFiles('{tmp}\install-bootstrap.ps1');
+  ExtractTemporaryFiles('{tmp}\setup-local-data.ps1');
+  ExtractTemporaryFiles('{tmp}\import-osm.ps1');
+  ExtractTemporaryFiles('{tmp}\setup-local-updates.ps1');
+  ExtractTemporaryFiles('{tmp}\leadroom.lua');
+  ExtractTemporaryFiles('{tmp}\post-import.sql');
+  ExtractTemporaryFiles('{tmp}\leadroom-osm-update.sh');
+  ExtractTemporaryFiles('{tmp}\leadroom-osm-update.service');
+  ExtractTemporaryFiles('{tmp}\leadroom-osm-update.timer');
   BootstrapStatusPath := ExpandConstant('{tmp}\leadroom-bootstrap.status');
   BootstrapCompletionPath := ExpandConstant('{tmp}\leadroom-bootstrap.complete');
+  BootstrapCancelPath := ExpandConstant('{tmp}\leadroom-bootstrap.cancel');
   DeleteFile(BootstrapStatusPath);
   DeleteFile(BootstrapCompletionPath);
+  DeleteFile(BootstrapCancelPath);
+  BootstrapCancelRequested := False;
   BootstrapProgress.SetText('Checking this computer',
     'Preparing the selected components');
   BootstrapProgress.SetProgress(0, 100);
+  BootstrapRunning := True;
   BootstrapProgress.Show;
+  BootstrapCancelButton.Enabled := True;
+  BootstrapCancelButton.Visible := True;
   try
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       BootstrapArguments, '', SW_HIDE, ewNoWait, ResultCode) then
       RaiseException('Windows could not start the Leadroom setup helper.');
     while not FileExists(BootstrapCompletionPath) do begin
-      Sleep(200);
+      PumpPendingMessages;
       RefreshBootstrapProgress;
+      Sleep(50);
     end;
     RefreshBootstrapProgress;
     if not LoadStringsFromFile(BootstrapCompletionPath, CompletionLines) then
       RaiseException('Leadroom setup did not report a completion status.');
-    if (GetArrayLength(CompletionLines) < 1) or (Trim(CompletionLines[0]) <> '0') then
-      RaiseException('Leadroom prerequisites could not be prepared. Review ' +
-        ExpandConstant('{localappdata}\Leadroom\logs\install.log') + ' and run setup again.');
+    if (GetArrayLength(CompletionLines) >= 1) and (Trim(CompletionLines[0]) = '2') then begin
+      BootstrapRunning := False;
+      BootstrapCancelButton.Visible := False;
+      WizardForm.CancelButton.Enabled := True;
+      WizardForm.CancelButton.OnClick(WizardForm.CancelButton);
+      Result := 'Setup was cancelled.';
+      Exit;
+    end;
+    if (GetArrayLength(CompletionLines) < 1) or (Trim(CompletionLines[0]) <> '0') then begin
+      Result := 'Leadroom prerequisites could not be prepared. Review ' +
+        ExpandConstant('{localappdata}\Leadroom\logs\install.log') + ' and run setup again.';
+      Exit;
+    end;
   finally
+    BootstrapRunning := False;
+    BootstrapCancelButton.Visible := False;
     DeleteFile(BootstrapStatusPath);
     DeleteFile(BootstrapCompletionPath);
+    if not BootstrapCancelRequested then DeleteFile(BootstrapCancelPath);
     BootstrapProgress.Hide;
   end;
 end;
