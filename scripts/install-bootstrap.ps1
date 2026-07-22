@@ -21,6 +21,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "Continue"
+Add-Type -AssemblyName System.Net.Http
 
 $bootstrapRoot = Join-Path $env:LOCALAPPDATA "Leadroom"
 $logDirectory = Join-Path $bootstrapRoot "logs"
@@ -102,14 +103,20 @@ function Install-WingetPackage([string]$Id, [string]$Name) {
 }
 
 function Invoke-OllamaModelPull([string]$Endpoint, [string]$ModelName) {
-    $client = [Net.Http.HttpClient]::new()
-    $client.Timeout = [Threading.Timeout]::InfiniteTimeSpan
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
     try {
         $payload = @{ name = $ModelName; stream = $true } | ConvertTo-Json -Compress
-        $content = [Net.Http.StringContent]::new($payload, [Text.Encoding]::UTF8, "application/json")
-        $request = [Net.Http.HttpRequestMessage]::new([Net.Http.HttpMethod]::Post, "$Endpoint/api/pull")
+        $content = [System.Net.Http.StringContent]::new($payload, [System.Text.Encoding]::UTF8, "application/json")
+        $request = [System.Net.Http.HttpRequestMessage]::new(
+            [System.Net.Http.HttpMethod]::Post,
+            "$Endpoint/api/pull"
+        )
         $request.Content = $content
-        $response = $client.SendAsync($request, [Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+        $response = $client.SendAsync(
+            $request,
+            [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
+        ).GetAwaiter().GetResult()
         $response.EnsureSuccessStatusCode()
         $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
         $reader = [IO.StreamReader]::new($stream)
