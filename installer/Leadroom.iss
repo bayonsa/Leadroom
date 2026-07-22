@@ -3,8 +3,9 @@
 #endif
 
 #define AppName "Leadroom"
-#define AppPublisher "Leadroom contributors"
-#define AppUrl "https://github.com/bayonsa/Leadroom"
+#define AppPublisher "Borun Studios Ltd"
+#define AppUrl "https://borunstudios.co.uk/"
+#define AppProjectUrl "https://github.com/bayonsa/Leadroom"
 #define AppExeName "Leadroom.exe"
 
 [Setup]
@@ -13,8 +14,8 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppUrl}
-AppSupportURL={#AppUrl}/issues
-AppUpdatesURL={#AppUrl}/releases
+AppSupportURL={#AppProjectUrl}/issues
+AppUpdatesURL={#AppProjectUrl}/releases
 DefaultDirName={localappdata}\Programs\Leadroom
 DefaultGroupName=Leadroom
 DisableProgramGroupPage=yes

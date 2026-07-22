@@ -7,6 +7,7 @@ name = "local-lead-scraper"
 version = "0.1.0"
 description = "Local lead research pipeline for public small-business websites"
 readme = "README.md"
+authors = [{ name = "Borun Studios Ltd" }]
 requires-python = ">=3.12,<3.14"
 dependencies = [
   "beautifulsoup4==4.15.0",
