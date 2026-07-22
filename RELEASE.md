@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Leadroom is preparing a source-only public repository. Phase 1 is the active milestone. Do not publish an installer, portable archive, or GitHub Release until the later packaging phases and the dependency-licence blocker in `docs/DEPENDENCY_LICENSES.md` are complete.
+Leadroom has a public source repository and locally built installer/portable release candidates. Do not publish a binary GitHub Release until clean-machine validation, automation, and the dependency-licence blocker in `docs/DEPENDENCY_LICENSES.md` are complete.
 
 ## Goal
 
@@ -141,25 +141,25 @@ Validated on Windows with Python 3.12 on 22 July 2026 by creating a new local cl
 
 ### Phase 2: Portable Release
 
-- Finalize PyInstaller packaging
-- Add packaged-app smoke tests
-- Generate `Leadroom-Portable.zip`
-- Verify operation on a clean Windows user profile
+- [x] Finalize PyInstaller packaging
+- [x] Add packaged-app and installer smoke tests
+- [x] Generate `Leadroom-Portable.zip`
+- [ ] Verify operation on a clean Windows user profile
 
 ### Phase 3: Windows Installer
 
-- Create the Inno Setup project
-- Add shortcuts, data directories, upgrade behavior, and uninstaller
-- Add Standard and Full Local installation choices
-- Prevent visible terminal windows during setup
+- [x] Create the Inno Setup project
+- [x] Add shortcuts, data directories, upgrade behavior, and uninstaller
+- [x] Add Standard and Full Local installation choices
+- [x] Prevent visible terminal windows during setup
 
 ### Phase 4: Dependency Bootstrap
 
-- Detect and optionally install Ollama
-- Download and verify recommended models
-- Detect and optionally configure PostgreSQL/PostGIS
-- Download, import, and update OpenStreetMap data
-- Add interrupted-download recovery
+- [x] Detect and optionally install WebView2 and Ollama
+- [x] Download and verify recommended models
+- [x] Detect and optionally configure PostgreSQL/PostGIS
+- [x] Download, import, and update OpenStreetMap data
+- [x] Add resumable model and map downloads
 
 ### Phase 5: First-Run Experience
 

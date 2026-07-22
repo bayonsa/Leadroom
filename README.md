@@ -214,6 +214,14 @@ OpenStreetMap data is © OpenStreetMap contributors and available under the ODbL
 
 The one-file result is `dist\Leadroom.exe`. It does not bundle Ollama models or the optional OSM dataset.
 
+To build the local Windows installer, portable archive, and SHA-256 checksums:
+
+```powershell
+.\scripts\build-release.ps1 -Version 0.1.0
+```
+
+The installer offers Standard and Full Local modes, separate folders for workspace data and large downloads, and optional WebView2, Ollama, model, and OpenStreetMap setup. See [docs/PACKAGING.md](docs/PACKAGING.md). These artifacts remain local release candidates and must not be uploaded publicly until the blockers in [RELEASE.md](RELEASE.md) are complete.
+
 ## Tests
 
 ```powershell

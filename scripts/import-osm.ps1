@@ -32,7 +32,9 @@ if ($Refresh -and (Test-Path -LiteralPath $pbf)) {
 $wslLua = Convert-ToWslPath (Join-Path $root "infra\osm\leadroom.lua")
 $wslSql = Convert-ToWslPath (Join-Path $root "infra\osm\post-import.sql")
 
-wsl -d Ubuntu -u root -- pg_ctlcluster 18 main start
+$cluster = @((wsl -d Ubuntu -u root -- pg_lsclusters --no-header | Select-Object -First 1) -split "\s+")
+if ($cluster.Count -lt 2) { throw "No PostgreSQL cluster was found in WSL." }
+wsl -d Ubuntu -u root -- pg_ctlcluster $cluster[0] $cluster[1] start
 wsl -d Ubuntu -u root -- mkdir -p /opt/leadroom
 wsl -d Ubuntu -u root -- install -m 0644 $wslLua /opt/leadroom/leadroom.lua
 wsl -d Ubuntu -u postgres -- osm2pgsql --create --slim --number-processes 8 --cache 12288 --output flex --style /opt/leadroom/leadroom.lua --database leadroom_osm $wslPbf
