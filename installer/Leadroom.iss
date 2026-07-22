@@ -313,6 +313,7 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
   CompletionLines: TArrayOfString;
+  FailureDetail: String;
 begin
   Result := '';
   ExtractTemporaryFiles('{tmp}\install-bootstrap.ps1');
@@ -359,7 +360,11 @@ begin
       Exit;
     end;
     if (GetArrayLength(CompletionLines) < 1) or (Trim(CompletionLines[0]) <> '0') then begin
-      Result := 'Leadroom prerequisites could not be prepared. Review ' +
+      FailureDetail := 'Leadroom prerequisites could not be prepared.';
+      if (GetArrayLength(CompletionLines) >= 2) and
+        (Trim(CompletionLines[1]) <> '') then
+        FailureDetail := Trim(CompletionLines[1]);
+      Result := FailureDetail + #13#10 + #13#10 + 'Review ' +
         ExpandConstant('{localappdata}\Leadroom\logs\install.log') + ' and run setup again.';
       Exit;
     end;

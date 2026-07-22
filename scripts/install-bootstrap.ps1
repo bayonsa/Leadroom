@@ -40,15 +40,30 @@ function Write-InstallerStatus(
     if ([string]::IsNullOrWhiteSpace($StatusPath)) { return }
     $safeTitle = ($Title -replace "[\r\n]+", " ").Trim()
     $safeDetail = ($Detail -replace "[\r\n]+", " ").Trim()
-    $temporary = "$StatusPath.writing"
-    @($Percent, $safeTitle, $safeDetail) |
-        Set-Content -LiteralPath $temporary -Encoding UTF8
-    Move-Item -LiteralPath $temporary -Destination $StatusPath -Force
+    $lines = @([string]$Percent, $safeTitle, $safeDetail)
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        try {
+            [IO.File]::WriteAllLines(
+                $StatusPath,
+                $lines,
+                [Text.UTF8Encoding]::new($false)
+            )
+            return
+        } catch [IO.IOException] {
+            Start-Sleep -Milliseconds (20 * ($attempt + 1))
+        }
+    }
+    # Progress is advisory; a transient UI-file collision must not abort setup.
 }
 
-function Complete-InstallerBootstrap([int]$ExitCode) {
+function Complete-InstallerBootstrap(
+    [int]$ExitCode,
+    [string]$Message = ""
+) {
     if (-not [string]::IsNullOrWhiteSpace($CompletionPath)) {
-        Set-Content -LiteralPath $CompletionPath -Value $ExitCode -Encoding ASCII
+        $safeMessage = ($Message -replace "[\r\n]+", " ").Trim()
+        @([string]$ExitCode, $safeMessage) |
+            Set-Content -LiteralPath $CompletionPath -Encoding UTF8
     }
 }
 
@@ -66,13 +81,16 @@ trap {
     if ($_.Exception -is [OperationCanceledException]) {
         Write-InstallerStatus 0 "Setup cancelled" "Stopping the current operation"
         try { Write-InstallLog "Bootstrap cancelled by the user." } catch {}
-        Complete-InstallerBootstrap 2
+        Complete-InstallerBootstrap 2 "Setup was cancelled by the user."
         Remove-Item -LiteralPath $CancelPath -Force -ErrorAction SilentlyContinue
         exit 2
     } else {
         Write-InstallerStatus 0 "Setup could not continue" $message
-        try { Write-InstallLog "Bootstrap failed: $message" } catch {}
-        Complete-InstallerBootstrap 1
+        try {
+            Write-InstallLog "Bootstrap failed: $message"
+            if ($_.ScriptStackTrace) { Write-InstallLog "Bootstrap stack: $($_.ScriptStackTrace)" }
+        } catch {}
+        Complete-InstallerBootstrap 1 $message
         exit 1
     }
 }
