@@ -1,0 +1,49 @@
+name: Bug report
+description: Report a reproducible Leadroom problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Remove credentials and personal lead data before attaching logs or screenshots.
+  - type: input
+    id: version
+    attributes:
+      label: Leadroom version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Windows, Python, WebView, Ollama, and model versions when relevant.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitised logs or screenshots
+      description: Never include credentials, private database contents, or personal lead data.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials and personal data from everything attached.
+          required: true

@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-lead-scraper"
+version = "0.1.0"
+description = "Local lead research pipeline for public small-business websites"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "beautifulsoup4==4.15.0",
+  "ddgs==9.14.4",
+  "fastapi==0.139.0",
+  "httpx==0.28.1",
+  "lxml==6.1.1",
+  "pandas==3.0.3",
+  "pydantic==2.13.4",
+  "python-dotenv==1.2.2",
+  "pywebview==6.2.1",
+  "psycopg[binary]==3.3.3",
+  "scrapegraphai==2.1.5",
+  "SQLAlchemy==2.0.51",
+  "tldextract==5.3.1",
+  "uvicorn==0.51.0",
+]
+
+[project.scripts]
+lead-scraper = "run_cli:main"
+lead-scraper-check = "app.preflight:main"
+
+[tool.setuptools]
+py-modules = ["run_cli"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

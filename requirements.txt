@@ -1,0 +1,14 @@
+beautifulsoup4==4.15.0
+ddgs==9.14.4
+fastapi==0.139.0
+httpx==0.28.1
+lxml==6.1.1
+pandas==3.0.3
+pydantic==2.13.4
+python-dotenv==1.2.2
+pywebview==6.2.1
+psycopg[binary]==3.3.3
+scrapegraphai==2.1.5
+SQLAlchemy==2.0.51
+tldextract==5.3.1
+uvicorn==0.51.0

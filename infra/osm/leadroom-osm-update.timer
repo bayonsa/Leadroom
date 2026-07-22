@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Leadroom OpenStreetMap update every night
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=leadroom-osm-update.service
+
+[Install]
+WantedBy=timers.target

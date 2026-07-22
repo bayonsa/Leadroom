@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<osm version="0.6" generator="Leadroom integration fixture">
+  <node id="1001" lat="51.5152" lon="-0.1419" version="1">
+    <tag k="name" v="Northstar Hair Studio"/>
+    <tag k="shop" v="hairdresser"/>
+    <tag k="website" v="https://northstar-hair.example/"/>
+    <tag k="contact:phone" v="+44 20 7946 0101"/>
+    <tag k="contact:email" v="hello@northstar-hair.example"/>
+    <tag k="addr:housenumber" v="14"/>
+    <tag k="addr:street" v="Sample Street"/>
+    <tag k="addr:city" v="London"/>
+    <tag k="addr:postcode" v="W1F 8AA"/>
+  </node>
+  <node id="1002" lat="51.5205" lon="-0.1341" version="1">
+    <tag k="name" v="Elm Beauty Rooms"/>
+    <tag k="shop" v="beauty"/>
+    <tag k="phone" v="020 7946 0102"/>
+    <tag k="addr:city" v="London"/>
+    <tag k="addr:postcode" v="WC1E 6BT"/>
+  </node>
+  <node id="1003" lat="51.5079" lon="-0.0877" version="1">
+    <tag k="name" v="River Dental Care"/>
+    <tag k="amenity" v="dentist"/>
+    <tag k="email" v="reception@river-dental.example"/>
+    <tag k="addr:city" v="London"/>
+    <tag k="addr:postcode" v="SE1 2TH"/>
+  </node>
+  <node id="1004" lat="52.4814" lon="-1.8998" version="1">
+    <tag k="name" v="Central Cooling Services"/>
+    <tag k="craft" v="hvac"/>
+    <tag k="contact:phone" v="0121 555 0199"/>
+    <tag k="addr:city" v="Birmingham"/>
+    <tag k="addr:postcode" v="B1 1AA"/>
+  </node>
+  <node id="1005" lat="51.5050" lon="-0.1200" version="1">
+    <tag k="name" v="Boundary Coffee"/>
+    <tag k="amenity" v="cafe"/>
+    <tag k="phone" v="020 7946 0105"/>
+  </node>
+  <node id="2001" lat="51.40" lon="-0.30" version="1"/>
+  <node id="2002" lat="51.40" lon="0.10" version="1"/>
+  <node id="2003" lat="51.65" lon="0.10" version="1"/>
+  <node id="2004" lat="51.65" lon="-0.30" version="1"/>
+  <way id="3001" version="1">
+    <nd ref="2001"/><nd ref="2002"/><nd ref="2003"/><nd ref="2004"/><nd ref="2001"/>
+  </way>
+  <relation id="4001" version="1">
+    <member type="way" ref="3001" role="outer"/>
+    <tag k="type" v="multipolygon"/>
+    <tag k="boundary" v="administrative"/>
+    <tag k="admin_level" v="6"/>
+    <tag k="name" v="London"/>
+  </relation>
+</osm>

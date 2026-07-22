@@ -1,0 +1,12 @@
+[Unit]
+Description=Update the Leadroom OpenStreetMap index
+After=postgresql.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=postgres
+ExecStart=/usr/local/sbin/leadroom-osm-update
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
