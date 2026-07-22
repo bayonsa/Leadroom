@@ -435,6 +435,10 @@ tbody tr:hover, .runs-table tbody tr:hover td { background: #fdf4e0; }
   .page-header { min-height: 0; margin-bottom: 24px; flex-direction: column; align-items: stretch; }
   .page-header h1 { font-size: 34px; }
   .page-header p { font-size: 14px; }
+  .empty-state.runs-empty { min-height: 0; padding: 22px 18px; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; }
+  .runs-empty-icon { width: 44px; height: 44px; }
+  .runs-empty-copy h2 { font-size: 19px; }
+  .runs-empty-action { grid-column: 1 / -1; width: 100%; }
   .header-actions { width: 100%; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .header-actions .button { min-width: 0; padding-right: 12px; padding-left: 12px; }
   .repository-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }

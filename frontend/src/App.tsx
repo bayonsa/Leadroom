@@ -1129,7 +1129,17 @@ function SearchProgress({ mode }: { mode: 'initial' | 'continuation' }) {
   return <div className="search-progress" role="status" aria-live="polite"><div className="search-progress-head"><span><ScanSearch /><span><strong>Search in progress</strong><small>{stage}</small></span></span><time>{time}</time></div><div className="search-progress-track" role="progressbar" aria-label="Searching for candidates" aria-valuetext={`${stage}, ${time} elapsed`}><span /></div><div className="search-progress-foot"><span>Results are filtered before they enter this run.</span><span>Elapsed</span></div></div>
 }
 function LoadingRows() { return <div className="loading" aria-label="Loading"><span /><span /><span /></div> }
-function EmptyState() { return <div className="empty-state"><Search /><h2>No runs yet</h2><p>Start with a niche and location, then review candidates before enrichment.</p><NavLink className="button primary" to="/new"><Plus />Create first run</NavLink></div> }
+function EmptyState() {
+  return <div className="empty-state runs-empty">
+    <span className="runs-empty-icon" aria-hidden="true"><Search /></span>
+    <div className="runs-empty-copy">
+      <span className="eyebrow">Ready when you are</span>
+      <h2>Create your first run</h2>
+      <p>Choose a market and location to start building a focused lead list.</p>
+    </div>
+    <NavLink className="button primary runs-empty-action" to="/new"><Plus />New run</NavLink>
+  </div>
+}
 function formatDate(value?: string) { return value ? new Intl.DateTimeFormat('en-GB', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—' }
 
 export default Shell
