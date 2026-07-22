@@ -31,6 +31,8 @@ The Wizard provides:
 3. Optional WebView2 and Ollama installation through `winget`
 4. Optional verified `ollama pull` for `llama3.2:3b`
 5. Optional WSL/PostgreSQL/PostGIS/OpenStreetMap setup for Full Local
+
+The preparation page reports the active component while bootstrap runs. Ollama model downloads stream their current layer percentage and transferred size into the installer; package-manager and Full Local operations show named stage progress when their underlying tools do not expose a reliable overall percentage. Detailed events remain available in `%LOCALAPPDATA%\Leadroom\logs\install.log`.
 6. Start Menu and optional Desktop shortcuts
 
 Upgrades preserve an existing `storage.json`. Uninstall removes application files and asks whether workspace data and downloads should be retained.

@@ -75,6 +75,8 @@ var
   StoragePage: TInputDirWizardPage;
   DependencyPage: TInputOptionWizardPage;
   BootstrapProgress: TOutputProgressWizardPage;
+  BootstrapStatusPath: String;
+  BootstrapCompletionPath: String;
 
 function ParamValue(const Name, Default: String): String;
 begin
@@ -163,7 +165,7 @@ begin
 
   BootstrapProgress := CreateOutputProgressPage(
     'Preparing Leadroom',
-    'Checking prerequisites and downloading selected components...');
+    'Progress for each selected component appears below.');
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -192,7 +194,9 @@ begin
     ' -InstallRoot ' + PowerShellQuote(ExpandConstant('{app}')) +
     ' -DataRoot ' + PowerShellQuote(StoragePage.Values[0]) +
     ' -DownloadsRoot ' + PowerShellQuote(StoragePage.Values[1]) +
-    ' -Model ' + PowerShellQuote('llama3.2:3b');
+    ' -Model ' + PowerShellQuote('llama3.2:3b') +
+    ' -StatusPath ' + PowerShellQuote(BootstrapStatusPath) +
+    ' -CompletionPath ' + PowerShellQuote(BootstrapCompletionPath);
   if DependencyPage.Values[0] then Result := Result + ' -InstallWebView';
   if DependencyPage.Values[1] then Result := Result + ' -InstallOllama';
   if DependencyPage.Values[2] then Result := Result + ' -DownloadModel';
@@ -200,23 +204,52 @@ begin
   if ParamEnabled('FORCE_STORAGE', False) then Result := Result + ' -ForceStorage';
 end;
 
+procedure RefreshBootstrapProgress;
+var
+  Lines: TArrayOfString;
+  Percent: Integer;
+begin
+  if not LoadStringsFromFile(BootstrapStatusPath, Lines) then Exit;
+  if GetArrayLength(Lines) < 3 then Exit;
+  Percent := StrToIntDef(Trim(Lines[0]), 0);
+  if Percent < 0 then Percent := 0;
+  if Percent > 100 then Percent := 100;
+  BootstrapProgress.SetText(Trim(Lines[1]), Trim(Lines[2]));
+  BootstrapProgress.SetProgress(Percent, 100);
+  WizardForm.Refresh;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
+  CompletionLines: TArrayOfString;
 begin
   if CurStep <> ssPostInstall then Exit;
-  BootstrapProgress.SetText('Preparing Leadroom',
-    'This can take several minutes when a model or local dataset is selected. Downloads use your chosen folder.');
-  BootstrapProgress.SetProgress(0, 0);
+  BootstrapStatusPath := ExpandConstant('{tmp}\leadroom-bootstrap.status');
+  BootstrapCompletionPath := ExpandConstant('{tmp}\leadroom-bootstrap.complete');
+  DeleteFile(BootstrapStatusPath);
+  DeleteFile(BootstrapCompletionPath);
+  BootstrapProgress.SetText('Checking this computer',
+    'Preparing the selected components');
+  BootstrapProgress.SetProgress(0, 100);
   BootstrapProgress.Show;
   try
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
-      BootstrapArguments, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      BootstrapArguments, '', SW_HIDE, ewNoWait, ResultCode) then
       RaiseException('Windows could not start the Leadroom setup helper.');
-    if ResultCode <> 0 then
+    while not FileExists(BootstrapCompletionPath) do begin
+      Sleep(200);
+      RefreshBootstrapProgress;
+    end;
+    RefreshBootstrapProgress;
+    if not LoadStringsFromFile(BootstrapCompletionPath, CompletionLines) then
+      RaiseException('Leadroom setup did not report a completion status.');
+    if (GetArrayLength(CompletionLines) < 1) or (Trim(CompletionLines[0]) <> '0') then
       RaiseException('Leadroom prerequisites could not be prepared. Review ' +
         ExpandConstant('{localappdata}\Leadroom\logs\install.log') + ' and run setup again.');
   finally
+    DeleteFile(BootstrapStatusPath);
+    DeleteFile(BootstrapCompletionPath);
     BootstrapProgress.Hide;
   end;
 end;
