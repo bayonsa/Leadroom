@@ -1,5 +1,15 @@
 :root {
-  font-family: "Public Sans Variable", "Segoe UI", sans-serif;
+  --font-ui: "DM Sans Variable", "Segoe UI", sans-serif;
+  --font-mono: "Source Code Pro Variable", Consolas, monospace;
+  --type-caption: 12px;
+  --type-body: 14px;
+  --type-heading: 18px;
+  --type-display: 36px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  font-family: var(--font-ui);
   color: var(--ink, #292524);
   background: var(--canvas, #fffdf7);
   font-synthesis: none;
@@ -7,9 +17,14 @@
   letter-spacing: 0;
 }
 
-* { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; font-size: 16px; }
+* { box-sizing: border-box; letter-spacing: 0; }
+body { margin: 0; min-width: 320px; min-height: 100vh; font-family: var(--font-ui); font-size: var(--type-body); font-weight: var(--weight-regular); }
 button, input, select, textarea { font: inherit; letter-spacing: 0; }
+code, pre, kbd, samp { font-family: var(--font-mono); }
+h1 { font-size: var(--type-display); }
+h2, h3, h4, h5, h6 { font-size: var(--type-heading); }
+small { font-size: var(--type-caption); }
+strong, b { font-weight: var(--weight-bold); }
 button, a { -webkit-tap-highlight-color: transparent; }
 a { color: inherit; }
 :focus-visible { outline: 3px solid var(--focus, #e59a3a); outline-offset: 2px; }

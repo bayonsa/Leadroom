@@ -1,19 +1,20 @@
 # Dependency Licence Audit
 
-This document records the source-publication audit performed on 22 July 2026. It is not legal advice and does not replace the licence text shipped by each dependency.
+This document records the source-publication audit updated on 23 July 2026. It is not legal advice and does not replace the licence text shipped by each dependency.
 
 ## Scope
 
 - Direct Python dependencies declared in `pyproject.toml`
 - Their installed runtime dependency graph in the project virtual environment
 - Non-development frontend packages in `frontend/package-lock.json`
-- Optional OpenStreetMap data and ScrapeGraphAI attribution described in `THIRD_PARTY_NOTICES.md`
+- Optional OpenStreetMap data, ScrapeGraphAI, and Scrapling attribution described in `THIRD_PARTY_NOTICES.md`
 
 ## Result
 
-- 108 installed Python runtime packages were inspected using package metadata, including `License-Expression`, `License`, and licence classifiers.
+- 121 installed Python runtime packages were inspected using package metadata, including `License-Expression`, `License`, and licence classifiers.
 - 15 frontend runtime packages were inspected from the lockfile; all declared a licence and no strong-copyleft licence was reported.
 - ScrapeGraphAI's installed wheel does not expose complete licence metadata. Its upstream repository declares the MIT licence and is attributed in `THIRD_PARTY_NOTICES.md`.
+- Scrapling declares the BSD 3-Clause licence and is attributed in `THIRD_PARTY_NOTICES.md`; its fetcher extras add curl-cffi, BrowserForge, Patchright, and supporting runtime packages.
 - `html2text==2025.4.15`, pulled transitively by ScrapeGraphAI, declares `GPL-3.0-or-later`.
 
 ## Release Decision

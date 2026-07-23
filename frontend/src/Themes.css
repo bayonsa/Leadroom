@@ -27,7 +27,7 @@ html[data-theme="genesis"] {
   --shadow-brushed: none;
 }
 
-html[data-theme="genesis"] body { color: var(--ink); background: var(--canvas); font-family: "DM Sans Variable", "Segoe UI", sans-serif; }
+html[data-theme="genesis"] body { color: var(--ink); background: var(--canvas); font-family: var(--font-ui); }
 html[data-theme="genesis"] h1,
 html[data-theme="genesis"] h2,
 html[data-theme="genesis"] h3,
@@ -37,12 +37,12 @@ html[data-theme="genesis"] .section-heading h2,
 html[data-theme="genesis"] .engine-copy h2,
 html[data-theme="genesis"] .settings-section h2,
 html[data-theme="genesis"] .brief-market > strong,
-html[data-theme="genesis"] .run-page .page-header h1 { font-family: "Public Sans Variable", "Segoe UI", sans-serif; letter-spacing: 0; }
+html[data-theme="genesis"] .run-page .page-header h1 { font-family: var(--font-ui); letter-spacing: 0; }
 html[data-theme="genesis"] code,
 html[data-theme="genesis"] pre,
 html[data-theme="genesis"] .id-text,
 html[data-theme="genesis"] .domain-tag code,
-html[data-theme="genesis"] .runtime-list code { font-family: "Source Code Pro Variable", Consolas, monospace; }
+html[data-theme="genesis"] .runtime-list code { font-family: var(--font-mono); }
 
 html[data-theme="genesis"] .sidebar { color: var(--ink); border-color: var(--line); background: var(--surface); }
 html[data-theme="genesis"] .sidebar::before { display: none; }
@@ -164,7 +164,7 @@ html[data-theme="flip7"] {
 html[data-theme="flip7"] body {
   color: var(--ink);
   background: var(--canvas);
-  font-family: "Public Sans Variable", "Segoe UI", sans-serif;
+  font-family: var(--font-ui);
 }
 html[data-theme="flip7"] h1,
 html[data-theme="flip7"] h2,
@@ -176,8 +176,8 @@ html[data-theme="flip7"] .engine-copy h2,
 html[data-theme="flip7"] .settings-section h2,
 html[data-theme="flip7"] .brief-market > strong,
 html[data-theme="flip7"] .run-page .page-header h1 {
-  font-family: "Public Sans Variable", "Segoe UI", sans-serif;
-  font-weight: 800;
+  font-family: var(--font-ui);
+  font-weight: var(--weight-bold);
   letter-spacing: 0;
 }
 html[data-theme="flip7"] code,
@@ -185,7 +185,7 @@ html[data-theme="flip7"] pre,
 html[data-theme="flip7"] .id-text,
 html[data-theme="flip7"] .domain-tag code,
 html[data-theme="flip7"] .runtime-list code {
-  font-family: "Source Code Pro Variable", Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 html[data-theme="flip7"] .sidebar {
@@ -368,7 +368,7 @@ html[data-theme="rawblock"] {
 html[data-theme="rawblock"] body {
   color: #000;
   background: #fff;
-  font-family: "Public Sans Variable", Arial, sans-serif;
+  font-family: var(--font-ui);
 }
 html[data-theme="rawblock"] h1,
 html[data-theme="rawblock"] h2,
@@ -380,8 +380,8 @@ html[data-theme="rawblock"] .engine-copy h2,
 html[data-theme="rawblock"] .settings-section h2,
 html[data-theme="rawblock"] .brief-market > strong,
 html[data-theme="rawblock"] .run-page .page-header h1 {
-  font-family: "Public Sans Variable", Arial, sans-serif;
-  font-weight: 900;
+  font-family: var(--font-ui);
+  font-weight: var(--weight-bold);
   line-height: 1.05;
   letter-spacing: 0;
 }
@@ -393,7 +393,7 @@ html[data-theme="rawblock"] textarea,
 html[data-theme="rawblock"] .id-text,
 html[data-theme="rawblock"] .domain-tag code,
 html[data-theme="rawblock"] .runtime-list code {
-  font-family: "Source Code Pro Variable", Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 html[data-theme="rawblock"] .sidebar { color: #fff; border-right: 5px solid #000; background: #000; }
@@ -412,7 +412,7 @@ html[data-theme="rawblock"] .sidebar-meta { border-color: #fff; }
 html[data-theme="rawblock"] .sidebar-meta-icon { color: #fff; border: 2px solid #fff; border-radius: 0; }
 html[data-theme="rawblock"] .workspace-bar { border-bottom: 3px solid #000; background: #fff; backdrop-filter: none; }
 
-html[data-theme="rawblock"] .eyebrow { color: #000; font-weight: 900; letter-spacing: 0; text-decoration: underline; }
+html[data-theme="rawblock"] .eyebrow { color: #000; font-weight: var(--weight-bold); letter-spacing: 0; text-decoration: underline; }
 html[data-theme="rawblock"] .button {
   min-height: 42px;
   color: #000;
@@ -420,7 +420,7 @@ html[data-theme="rawblock"] .button {
   border-radius: 0;
   background: #fff;
   box-shadow: none;
-  font-weight: 900;
+  font-weight: var(--weight-bold);
   letter-spacing: 0;
   text-transform: uppercase;
   transition: none;
@@ -477,7 +477,7 @@ html[data-theme="rawblock"] .settings-icon { color: #fff; border: 2px solid #fff
 html[data-theme="rawblock"] .connection-state,
 html[data-theme="rawblock"] .count-badge { color: #000; border: 2px solid #fff; border-radius: 0; background: #fff; }
 html[data-theme="rawblock"] label,
-html[data-theme="rawblock"] legend { color: #000; font-weight: 900; letter-spacing: 0; text-transform: uppercase; }
+html[data-theme="rawblock"] legend { color: #000; font-weight: var(--weight-bold); letter-spacing: 0; text-transform: uppercase; }
 html[data-theme="rawblock"] input,
 html[data-theme="rawblock"] select,
 html[data-theme="rawblock"] textarea {
@@ -590,7 +590,7 @@ html[data-theme="evreghen"] {
 html[data-theme="evreghen"] body {
   color: var(--ink);
   background: var(--canvas);
-  font-family: "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-ui);
 }
 html[data-theme="evreghen"] h1,
 html[data-theme="evreghen"] h2,
@@ -602,7 +602,7 @@ html[data-theme="evreghen"] .engine-copy h2,
 html[data-theme="evreghen"] .settings-section h2,
 html[data-theme="evreghen"] .brief-market > strong,
 html[data-theme="evreghen"] .run-page .page-header h1 {
-  font-family: "Segoe UI", system-ui, sans-serif;
+  font-family: var(--font-ui);
   letter-spacing: 0;
 }
 html[data-theme="evreghen"] code,
@@ -610,7 +610,7 @@ html[data-theme="evreghen"] pre,
 html[data-theme="evreghen"] .id-text,
 html[data-theme="evreghen"] .domain-tag code,
 html[data-theme="evreghen"] .runtime-list code {
-  font-family: "Source Code Pro Variable", Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 html[data-theme="evreghen"] .sidebar {
@@ -755,7 +755,7 @@ html[data-theme="ember"] {
   --shadow-brushed: 0 1px 3px rgb(28 25 23 / 5%);
 }
 
-html[data-theme="ember"] body { color: var(--ink); background: var(--canvas); font-family: "Public Sans Variable", "Segoe UI", sans-serif; }
+html[data-theme="ember"] body { color: var(--ink); background: var(--canvas); font-family: var(--font-ui); }
 html[data-theme="ember"] h1,
 html[data-theme="ember"] h2,
 html[data-theme="ember"] h3,
@@ -766,15 +766,15 @@ html[data-theme="ember"] .engine-copy h2,
 html[data-theme="ember"] .settings-section h2,
 html[data-theme="ember"] .brief-market > strong,
 html[data-theme="ember"] .run-page .page-header h1 {
-  font-family: Georgia, "Times New Roman", serif;
-  font-weight: 700;
+  font-family: var(--font-ui);
+  font-weight: var(--weight-bold);
   letter-spacing: 0;
 }
 html[data-theme="ember"] code,
 html[data-theme="ember"] pre,
 html[data-theme="ember"] .id-text,
 html[data-theme="ember"] .domain-tag code,
-html[data-theme="ember"] .runtime-list code { font-family: "Source Code Pro Variable", Consolas, monospace; }
+html[data-theme="ember"] .runtime-list code { font-family: var(--font-mono); }
 
 html[data-theme="ember"] .sidebar { color: var(--ink); border-color: var(--line); background: var(--sidebar); }
 html[data-theme="ember"] .sidebar::before { display: none; }
@@ -903,7 +903,7 @@ html[data-theme="ember"] .page-header {
 }
 html[data-theme="ember"] .page-header h1 { color: #1c1917; line-height: 1.03; }
 html[data-theme="ember"] .page-header p { color: #78716c; }
-html[data-theme="ember"] .section-heading h2 { font-size: 23px; }
+html[data-theme="ember"] .section-heading h2 { font-size: var(--type-heading); }
 
 html[data-theme="ember"] .tabs {
   gap: 24px;
@@ -1029,7 +1029,7 @@ html[data-theme="ember"] .preflight-row:hover { background: #fff7ed; }
 html[data-theme="ember"] .outreach-row { border-color: var(--line); border-radius: 8px; background: #f5f5f4; box-shadow: var(--shadow-sm); }
 html[data-theme="ember"] .outreach-row:hover { border-color: #d6a38f; background: #fafaf9; box-shadow: var(--shadow-md); }
 html[data-theme="ember"] .outreach-row.selected { border-color: var(--line); border-left: 2px solid var(--coral); box-shadow: none; background: #e7e5e4; }
-html[data-theme="ember"] .outreach-row > pre { border: 1px solid var(--line); border-radius: 8px; color: #44403c; background: #fafaf9; font-family: "Source Sans 3", "Public Sans Variable", "Segoe UI", sans-serif; }
+html[data-theme="ember"] .outreach-row > pre { border: 1px solid var(--line); border-radius: 8px; color: #44403c; background: #fafaf9; font-family: var(--font-ui); }
 html[data-theme="ember"] .audit-selector > span { border-color: #a8a29e; border-radius: 6px; background: #fafaf9; }
 html[data-theme="ember"] .approval-controls .checkbox-label { border-color: var(--line); border-radius: 8px; background: #fafaf9; }
 html[data-theme="ember"] .compliance-notice { border: 1px solid #bbf7d0; border-left: 4px solid #16a34a; border-radius: 8px; background: #ecfdf3; }
@@ -1076,17 +1076,17 @@ html[data-theme="insightdeck"] {
   --shadow-brushed: 0 1px 3px rgb(15 23 42 / 6%);
 }
 
-html[data-theme="insightdeck"] body { color: var(--ink); background: var(--canvas); font-family: "Public Sans Variable", "Segoe UI", sans-serif; }
+html[data-theme="insightdeck"] body { color: var(--ink); background: var(--canvas); font-family: var(--font-ui); }
 html[data-theme="insightdeck"] h1,
 html[data-theme="insightdeck"] h2,
 html[data-theme="insightdeck"] h3,
 html[data-theme="insightdeck"] .page-header h1,
 html[data-theme="insightdeck"] .panel h2,
 html[data-theme="insightdeck"] .section-heading h2,
-html[data-theme="insightdeck"] .settings-section h2 { font-family: "Public Sans Variable", "Segoe UI", sans-serif; font-weight: 720; letter-spacing: 0; }
+html[data-theme="insightdeck"] .settings-section h2 { font-family: var(--font-ui); font-weight: var(--weight-bold); letter-spacing: 0; }
 html[data-theme="insightdeck"] code,
 html[data-theme="insightdeck"] pre,
-html[data-theme="insightdeck"] .id-text { font-family: "Source Code Pro Variable", Consolas, monospace; }
+html[data-theme="insightdeck"] .id-text { font-family: var(--font-mono); }
 
 html[data-theme="insightdeck"] .sidebar { color: var(--ink); border-color: var(--line); background: #ffffff; }
 html[data-theme="insightdeck"] .sidebar::before { display: none; }
@@ -1299,18 +1299,18 @@ html[data-theme="vercel"] {
   --shadow-brushed: 0 0 0 1px rgb(0 0 0 / 8%), 0 2px 2px rgb(0 0 0 / 4%);
 }
 
-html[data-theme="vercel"] body { color: #171717; background: #ffffff; font-family: "Public Sans Variable", "Segoe UI", sans-serif; font-feature-settings: "liga" 1; }
+html[data-theme="vercel"] body { color: #171717; background: #ffffff; font-family: var(--font-ui); font-feature-settings: "liga" 1; }
 html[data-theme="vercel"] h1,
 html[data-theme="vercel"] h2,
 html[data-theme="vercel"] h3,
 html[data-theme="vercel"] .page-header h1,
 html[data-theme="vercel"] .panel h2,
 html[data-theme="vercel"] .section-heading h2,
-html[data-theme="vercel"] .settings-section h2 { font-family: "Public Sans Variable", "Segoe UI", sans-serif; font-weight: 650; letter-spacing: 0; text-wrap: balance; }
+html[data-theme="vercel"] .settings-section h2 { font-family: var(--font-ui); font-weight: var(--weight-semibold); letter-spacing: 0; text-wrap: balance; }
 html[data-theme="vercel"] code,
 html[data-theme="vercel"] pre,
 html[data-theme="vercel"] .id-text,
-html[data-theme="vercel"] .runtime-list code { font-family: "Source Code Pro Variable", Consolas, monospace; font-feature-settings: "liga" 1, "tnum" 1; }
+html[data-theme="vercel"] .runtime-list code { font-family: var(--font-mono); font-feature-settings: "liga" 1, "tnum" 1; }
 
 html[data-theme="vercel"] .sidebar { color: #171717; border-color: #eaeaea; background: #ffffff; }
 html[data-theme="vercel"] .sidebar::before { display: none; }
@@ -1387,7 +1387,7 @@ html[data-theme="vercel"] .engine-metrics,
 html[data-theme="vercel"] .operations-strip { overflow: hidden; border: 0; border-radius: 8px; background: #eaeaea; box-shadow: 0 0 0 1px rgb(0 0 0 / 8%), 0 2px 2px rgb(0 0 0 / 4%); }
 html[data-theme="vercel"] .metric,
 html[data-theme="vercel"] .run-state { background: #ffffff; }
-html[data-theme="vercel"] .metric strong { color: #171717; font-family: "Source Code Pro Variable", Consolas, monospace; font-variant-numeric: tabular-nums; }
+html[data-theme="vercel"] .metric strong { color: #171717; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 html[data-theme="vercel"] .metric-accent strong,
 html[data-theme="vercel"] .repository-overview .metric:first-child strong { color: #0a72ef; }
 html[data-theme="vercel"] .repository-overview .metric:nth-child(2) strong { color: #de1d8d; }
@@ -1481,7 +1481,7 @@ html[data-theme="vercel"] .download-track span { background: #171717; transition
   html[data-theme="vercel"] .tabs { gap: 16px; }
   html[data-theme="vercel"] input,
   html[data-theme="vercel"] select,
-  html[data-theme="vercel"] textarea { font-size: 16px; }
+  html[data-theme="vercel"] textarea { font-size: var(--type-heading); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1519,17 +1519,17 @@ html[data-theme="trustblue"] {
   --shadow-brushed: 0 1px 4px rgb(0 48 135 / 6%);
 }
 
-html[data-theme="trustblue"] body { color: var(--ink); background: var(--canvas); font-family: "Public Sans Variable", "Segoe UI", sans-serif; font-variant-numeric: tabular-nums; }
+html[data-theme="trustblue"] body { color: var(--ink); background: var(--canvas); font-family: var(--font-ui); font-variant-numeric: tabular-nums; }
 html[data-theme="trustblue"] h1,
 html[data-theme="trustblue"] h2,
 html[data-theme="trustblue"] h3,
 html[data-theme="trustblue"] .page-header h1,
 html[data-theme="trustblue"] .panel h2,
 html[data-theme="trustblue"] .section-heading h2,
-html[data-theme="trustblue"] .settings-section h2 { font-family: "Public Sans Variable", "Segoe UI", sans-serif; font-weight: 700; letter-spacing: 0; }
+html[data-theme="trustblue"] .settings-section h2 { font-family: var(--font-ui); font-weight: var(--weight-bold); letter-spacing: 0; }
 html[data-theme="trustblue"] code,
 html[data-theme="trustblue"] pre,
-html[data-theme="trustblue"] .id-text { font-family: "Source Code Pro Variable", Consolas, monospace; }
+html[data-theme="trustblue"] .id-text { font-family: var(--font-mono); }
 html[data-theme="trustblue"] .sidebar { color: var(--ink); border-color: var(--line); background: #ffffff; }
 html[data-theme="trustblue"] .sidebar::before { display: none; }
 html[data-theme="trustblue"] .desktop-brand { color: #003087; }
@@ -1648,17 +1648,17 @@ html[data-theme="zengrid"] {
   --shadow-brushed: none;
 }
 
-html[data-theme="zengrid"] body { color: var(--ink); background: var(--canvas); font-family: "DM Sans Variable", "Segoe UI", sans-serif; line-height: 1.7; }
+html[data-theme="zengrid"] body { color: var(--ink); background: var(--canvas); font-family: var(--font-ui); line-height: 1.7; }
 html[data-theme="zengrid"] h1,
 html[data-theme="zengrid"] h2,
 html[data-theme="zengrid"] h3,
 html[data-theme="zengrid"] .page-header h1,
 html[data-theme="zengrid"] .panel h2,
 html[data-theme="zengrid"] .section-heading h2,
-html[data-theme="zengrid"] .settings-section h2 { color: #57534e; font-family: "Public Sans Variable", "Segoe UI", sans-serif; font-weight: 450; letter-spacing: 0; }
+html[data-theme="zengrid"] .settings-section h2 { color: #57534e; font-family: var(--font-ui); font-weight: var(--weight-medium); letter-spacing: 0; }
 html[data-theme="zengrid"] code,
 html[data-theme="zengrid"] pre,
-html[data-theme="zengrid"] .id-text { font-family: "Source Code Pro Variable", Consolas, monospace; }
+html[data-theme="zengrid"] .id-text { font-family: var(--font-mono); }
 html[data-theme="zengrid"] .sidebar { color: var(--ink); border-color: var(--line); background: #faf9f6; }
 html[data-theme="zengrid"] .sidebar::before { display: none; }
 html[data-theme="zengrid"] .desktop-brand { color: #57534e; }
@@ -1678,7 +1678,7 @@ html[data-theme="zengrid"] .workspace-bar { color: var(--ink); border-color: var
 html[data-theme="zengrid"] .topbar .mobile-menu { color: #57534e; border-color: var(--line); border-radius: 4px; background: transparent; }
 html[data-theme="zengrid"] .topbar .mobile-brand { color: #57534e; }
 html[data-theme="zengrid"] .page-header { padding-bottom: 24px; border-bottom: 1px solid var(--line); }
-html[data-theme="zengrid"] .page-header h1 { line-height: 1.15; font-weight: 400; }
+html[data-theme="zengrid"] .page-header h1 { line-height: 1.15; font-weight: var(--weight-regular); }
 html[data-theme="zengrid"] .page-header p { color: #78716c; }
 html[data-theme="zengrid"] .eyebrow { color: #57534e; letter-spacing: 0; }
 html[data-theme="zengrid"] .button { border-radius: 4px; box-shadow: none; transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease; }
@@ -1704,7 +1704,7 @@ html[data-theme="zengrid"] .sync-note,
 html[data-theme="zengrid"] .pipeline-strip,
 html[data-theme="zengrid"] .settings-section > header { border-color: var(--line); background: #faf9f6; }
 html[data-theme="zengrid"] .settings-icon { color: #57534e; border-color: var(--line); border-radius: 4px; background: #f5f4f1; }
-html[data-theme="zengrid"] label { color: #78716c; font-weight: 500; }
+html[data-theme="zengrid"] label { color: #78716c; font-weight: var(--weight-medium); }
 html[data-theme="zengrid"] input,
 html[data-theme="zengrid"] select,
 html[data-theme="zengrid"] textarea { color: #57534e; border-color: var(--line); border-radius: 4px; background: #f5f4f1; box-shadow: none; }

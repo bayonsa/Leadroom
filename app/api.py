@@ -69,14 +69,15 @@ def make_run_name(niche: str, now: datetime | None = None) -> str:
 class RunCreate(BaseModel):
     niche: str = Field(min_length=1, max_length=120)
     location: str = Field(min_length=1, max_length=120)
-    max_results_per_query: int = Field(default=12, ge=1, le=100)
-    max_sites: int = Field(default=10, ge=1, le=500)
+    max_results_per_query: int = Field(default=100, ge=1, le=100)
+    max_sites: int = Field(default=500, ge=1, le=500)
     model: str | None = Field(default=None, min_length=1, max_length=120)
     run_name: str = Field(default="lead_pipeline", pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
     delay_seconds: float = Field(default=1.0, ge=0, le=60)
     search_provider: str = Field(default="auto", pattern="^(auto|brave|ddgs|osm_local|hybrid)$")
     discovery_mode: str = Field(default="new_only", pattern="^(new_only|reuse|refresh)$")
     crawl_mode: str = Field(default="deep", pattern="^(quick|deep|exhaustive)$")
+    advanced_fetching: bool = True
 
 
 class Problem(BaseModel):
@@ -1537,6 +1538,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
                     "crawl_mode": config.crawl_mode,
                     "crawl_page_limit": config.crawl_page_limit,
                     "crawl_depth": config.crawl_depth,
+                    "advanced_fetching": config.advanced_fetching,
                 },
                 "events": repo.list_events(run_id)[-100:],
             }

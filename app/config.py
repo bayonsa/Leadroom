@@ -73,8 +73,8 @@ class ScraperConfig(BaseModel):
     niche: str
     location: str
     model: str = Field(default_factory=lambda: os.getenv("DEFAULT_MODEL", "ollama/llama3.2:3b"))
-    max_results_per_query: int = Field(default=12, ge=1, le=100)
-    max_sites: int = Field(default=10, ge=1, le=500)
+    max_results_per_query: int = Field(default=100, ge=1, le=100)
+    max_sites: int = Field(default=500, ge=1, le=500)
     output_dir: Path = Field(default_factory=lambda: _data_path("exports"))
     run_name: str = "lead_pipeline"
     blocked_domains: set[str] = Field(default_factory=lambda: set(DEFAULT_BLOCKED_DOMAINS))
@@ -86,6 +86,7 @@ class ScraperConfig(BaseModel):
     crawl_depth: int = Field(default=2, ge=0, le=4)
     cache_dir: Path = Field(default_factory=lambda: _data_path("cache"))
     cache_ttl_hours: int = Field(default=168, ge=1, le=2160)
+    advanced_fetching: bool = True
     browser_fallback: bool = True
     database_path: Path = Field(default_factory=lambda: _data_path("lead_scraper.db"))
     reuse_existing_leads: bool = True

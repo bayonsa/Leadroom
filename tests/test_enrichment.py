@@ -53,6 +53,121 @@ MULTI_TYPE_HTML = """
 
 
 class EnrichmentTests(unittest.TestCase):
+    @patch("app.enrichment._assert_public_url")
+    @patch.object(HtmlFetcher, "_fetch_with_scrapling")
+    def test_blocked_response_uses_scrapling_before_browser(self, scrapling_fetch, _assert_url):
+        scrapling_fetch.return_value = FetchResult(
+            "https://example.com/",
+            HTML,
+            False,
+            "scrapling-fetcher",
+        )
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                403,
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fetcher = HtmlFetcher(Path(temp_dir), 1, 0, 1, transport=transport)
+            result = fetcher.fetch("https://example.com/")
+            fetcher.close()
+
+        scrapling_fetch.assert_called_once_with("https://example.com/")
+        self.assertEqual(result.method, "scrapling-fetcher")
+
+    @patch("app.enrichment._assert_public_url")
+    @patch.object(HtmlFetcher, "_fetch_with_scrapling")
+    def test_adaptive_fetching_can_be_disabled(self, scrapling_fetch, _assert_url):
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                403,
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fetcher = HtmlFetcher(
+                Path(temp_dir),
+                1,
+                0,
+                1,
+                browser_fallback=False,
+                advanced_fetching=False,
+                transport=transport,
+            )
+            with self.assertRaises(httpx.HTTPStatusError):
+                fetcher.fetch("https://example.com/")
+            fetcher.close()
+
+        scrapling_fetch.assert_not_called()
+
+    @patch("app.enrichment._assert_public_url")
+    @patch.object(HtmlFetcher, "_fetch_with_scrapling")
+    def test_not_found_response_does_not_trigger_adaptive_fetching(
+        self,
+        scrapling_fetch,
+        _assert_url,
+    ):
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                404,
+                headers={"content-type": "text/html"},
+                request=request,
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fetcher = HtmlFetcher(Path(temp_dir), 1, 0, 1, transport=transport)
+            with self.assertRaises(httpx.HTTPStatusError):
+                fetcher.fetch("https://example.com/missing")
+            fetcher.close()
+
+        scrapling_fetch.assert_not_called()
+
+    @patch("scrapling.fetchers.FetcherSession")
+    def test_scrapling_redirects_are_checked_for_private_destinations(self, session_factory):
+        response = MagicMock()
+        response.status = 302
+        response.headers = {"location": "http://127.0.0.1/admin"}
+        session_factory.return_value.__enter__.return_value.get.return_value = response
+
+        with (
+            tempfile.TemporaryDirectory() as temp_dir,
+            patch(
+                "app.enrichment._assert_public_url",
+                side_effect=lambda url: (
+                    (_ for _ in ()).throw(ValueError("private destination"))
+                    if "127.0.0.1" in url
+                    else None
+                ),
+            ),
+        ):
+            fetcher = HtmlFetcher(Path(temp_dir), 1, 0, 1, browser_fallback=False)
+            with self.assertRaisesRegex(ValueError, "private destination"):
+                fetcher._fetch_with_scrapling("https://example.com/")
+            fetcher.close()
+
+    @patch("app.enrichment._assert_public_url")
+    @patch("scrapling.fetchers.FetcherSession")
+    def test_scrapling_rejects_oversized_html(self, session_factory, _assert_url):
+        response = MagicMock()
+        response.status = 200
+        response.url = "https://example.com/"
+        response.headers = {"content-type": "text/html; charset=utf-8"}
+        response.body = b"x" * 5_000_001
+        response.encoding = "utf-8"
+        session_factory.return_value.__enter__.return_value.get.return_value = response
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fetcher = HtmlFetcher(Path(temp_dir), 1, 0, 1, browser_fallback=False)
+            with self.assertRaisesRegex(ValueError, "5 MB"):
+                fetcher._fetch_with_scrapling("https://example.com/")
+            fetcher.close()
+
     @patch("app.enrichment.sync_playwright")
     def test_browser_fallback_uses_system_edge_on_windows(self, playwright_factory):
         playwright = MagicMock()

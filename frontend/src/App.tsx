@@ -269,7 +269,7 @@ const CRAWL_PROFILES = {
 function NewRunPage() {
   const navigate = useNavigate()
   const [runTimestamp] = useState(() => new Date())
-  const [form, setForm] = useState<RunCreate>({ niche: '', location: 'London UK', max_results_per_query: 12, max_sites: 10, model: 'ollama/llama3.2:3b', run_name: buildRunName('', runTimestamp), delay_seconds: 1, search_provider: 'hybrid', discovery_mode: 'new_only', crawl_mode: 'deep' })
+  const [form, setForm] = useState<RunCreate>({ niche: '', location: 'London UK', max_results_per_query: 100, max_sites: 500, model: 'ollama/llama3.2:3b', run_name: buildRunName('', runTimestamp), delay_seconds: 1, search_provider: 'hybrid', discovery_mode: 'new_only', crawl_mode: 'deep', advanced_fetching: true })
   const workspaceSettings = useQuery({ queryKey: ['settings'], queryFn: api.settings, staleTime: 30_000 })
   const localData = useQuery({ queryKey: ['local-data-status'], queryFn: api.localDataStatus, staleTime: 15_000 })
   const deferredNiche = useDeferredValue(form.niche.trim())
@@ -282,7 +282,7 @@ function NewRunPage() {
   })
   const create = useMutation({ mutationFn: api.createRun, onSuccess: (data) => navigate(`/runs/${data.run.id}`) })
   const effectiveModel = form.model === 'ollama/llama3.2:3b' ? workspaceSettings.data?.default_model ?? form.model : form.model
-  const set = (key: keyof RunCreate, value: string | number) => setForm((old) => ({ ...old, [key]: value }))
+  const set = (key: keyof RunCreate, value: string | number | boolean) => setForm((old) => ({ ...old, [key]: value }))
   const sourceLabel = form.search_provider === 'osm_local' ? 'Local only' : form.search_provider === 'auto' ? 'Web only' : 'Local + web'
   const crawlProfile = CRAWL_PROFILES[form.crawl_mode]
   const modeCopy = form.discovery_mode === 'new_only' ? 'Only domains not seen in earlier matching runs.' : form.discovery_mode === 'reuse' ? 'Saved lead data is reused whenever it is available.' : 'Every returned website is searched and enriched again.'
@@ -296,28 +296,26 @@ function NewRunPage() {
         <label>Location<input required value={form.location} onChange={(e) => set('location', e.target.value)} /></label>
         <label>Run name<input readOnly value={form.run_name} title="Generated automatically from the niche and start time" /></label>
       </div>
-      <div className="step-label"><span>2</span>Discovery source</div>
-      <fieldset className="source-picker">
-        <legend className="sr-only">Choose where Leadroom searches</legend>
-        <div>
-          <SourceOption icon={<Database />} title="Local" detail="Private index, no total result limit" value="osm_local" selected={form.search_provider} onSelect={(value) => set('search_provider', value)} disabled={!localData.data?.ready} />
-          <SourceOption icon={<Search />} title="Web" detail="Fresh websites from internet search" value="auto" selected={form.search_provider} onSelect={(value) => set('search_provider', value)} />
-          <SourceOption icon={<Layers3 />} title="Both" detail="Search together and merge evidence" value="hybrid" selected={form.search_provider} onSelect={(value) => set('search_provider', value)} recommended />
-        </div>
-      </fieldset>
-      <div className="step-label"><span>3</span>Previous results</div>
-      <fieldset className="discovery-fieldset">
-        <legend className="sr-only">Choose how previously discovered sites are handled</legend>
-        <div className="discovery-options">
-          <DiscoveryOption icon={<ScanSearch />} title="Find unseen sites" detail="Skip domains already found for this market" value="new_only" selected={form.discovery_mode} onSelect={(value) => set('discovery_mode', value)} recommended />
-          <DiscoveryOption icon={<Database />} title="Reuse saved" detail="Use existing lead data when available" value="reuse" selected={form.discovery_mode} onSelect={(value) => set('discovery_mode', value)} />
-          <DiscoveryOption icon={<RotateCw />} title="Recheck every site" detail="Search and scrape returned domains again" value="refresh" selected={form.discovery_mode} onSelect={(value) => set('discovery_mode', value)} />
-        </div>
-      </fieldset>
-      <MarketHistoryStrip loading={history.isFetching} history={history.data} hasScope={deferredNiche.length >= 2} />
       <details className="advanced-settings">
         <summary><span className="advanced-title"><SlidersHorizontal /><span><strong>Advanced settings</strong><small>{form.max_sites} per batch · {crawlProfile.label} crawl · {sourceLabel}</small></span></span><ChevronDown className="summary-chevron" /></summary>
         <div className="advanced-body">
+          <fieldset className="source-picker">
+            <legend>Discovery source</legend>
+            <div>
+              <SourceOption icon={<Database />} title="Local" detail="Private index, no total result limit" value="osm_local" selected={form.search_provider} onSelect={(value) => set('search_provider', value)} disabled={!localData.data?.ready} />
+              <SourceOption icon={<Search />} title="Web" detail="Fresh websites from internet search" value="auto" selected={form.search_provider} onSelect={(value) => set('search_provider', value)} />
+              <SourceOption icon={<Layers3 />} title="Both" detail="Search together and merge evidence" value="hybrid" selected={form.search_provider} onSelect={(value) => set('search_provider', value)} recommended />
+            </div>
+          </fieldset>
+          <fieldset className="discovery-fieldset">
+            <legend>Previous results</legend>
+            <div className="discovery-options">
+              <DiscoveryOption icon={<ScanSearch />} title="Find unseen sites" detail="Skip domains already found for this market" value="new_only" selected={form.discovery_mode} onSelect={(value) => set('discovery_mode', value)} recommended />
+              <DiscoveryOption icon={<Database />} title="Reuse saved" detail="Use existing lead data when available" value="reuse" selected={form.discovery_mode} onSelect={(value) => set('discovery_mode', value)} />
+              <DiscoveryOption icon={<RotateCw />} title="Recheck every site" detail="Search and scrape returned domains again" value="refresh" selected={form.discovery_mode} onSelect={(value) => set('discovery_mode', value)} />
+            </div>
+          </fieldset>
+          <MarketHistoryStrip loading={history.isFetching} history={history.data} hasScope={deferredNiche.length >= 2} />
           <fieldset className="crawl-picker"><legend>Crawl depth</legend><div>
             <CrawlOption mode="quick" selected={form.crawl_mode} onSelect={(value) => set('crawl_mode', value)} />
             <CrawlOption mode="deep" selected={form.crawl_mode} onSelect={(value) => set('crawl_mode', value)} recommended />
@@ -328,6 +326,10 @@ function NewRunPage() {
           <label>Candidates per batch<input type="number" min="1" max="500" value={form.max_sites} onChange={(e) => set('max_sites', Number(e.target.value))} /></label>
           <label>Delay per site (sec)<input type="number" min="0" max="60" step="0.5" value={form.delay_seconds} onChange={(e) => set('delay_seconds', Number(e.target.value))} /></label>
           <label>Local model<input value={effectiveModel} onChange={(e) => set('model', e.target.value)} /></label>
+          <label className="adaptive-fetching span-2">
+            <span><strong>Adaptive fetching</strong><small>Retry blocked or browser-sensitive sites with Scrapling before opening a browser.</small></span>
+            <input type="checkbox" role="switch" checked={form.advanced_fetching} onChange={(event) => set('advanced_fetching', event.target.checked)} />
+          </label>
           <div className="unified-discovery span-2"><div className="unified-title"><Layers3 /><span><strong>{sourceLabel}</strong><small>{form.search_provider === 'osm_local' ? 'No overall limit. Continue in fast local batches from the same run.' : form.search_provider === 'auto' ? 'Live internet discovery without querying the local index.' : 'Local and internet results are deduplicated and merged.'}</small></span><em><Check />Selected</em></div></div>
           </div>
         </div>

@@ -139,6 +139,7 @@ export interface RunCreate {
   search_provider: 'hybrid' | 'osm_local' | 'auto' | 'brave' | 'ddgs'
   discovery_mode: DiscoveryMode
   crawl_mode: 'quick' | 'deep' | 'exhaustive'
+  advanced_fetching: boolean
 }
 
 export interface WorkspaceSettings {

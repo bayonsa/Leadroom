@@ -102,6 +102,13 @@ OBFUSCATED_EMAIL_RE = re.compile(
     r"([A-Z0-9.-]+)\s*(?:\[dot\]|\(dot\)|\sdot\s)\s*([A-Z]{2,})\b",
     re.IGNORECASE,
 )
+ADAPTIVE_STATUS_CODES = {403, 406, 409, 418, 425, 429}
+CHALLENGE_MARKERS = (
+    "cf-chl-",
+    "challenge-platform",
+    "checking your browser",
+    "enable javascript and cookies to continue",
+)
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,7 @@ class HtmlFetcher:
         retry_attempts: int,
         cache_ttl_hours: int,
         browser_fallback: bool = True,
+        advanced_fetching: bool = True,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.cache_dir = cache_dir
@@ -127,6 +135,7 @@ class HtmlFetcher:
         self.retry_attempts = retry_attempts
         self.cache_ttl = timedelta(hours=cache_ttl_hours)
         self.browser_fallback = browser_fallback
+        self.advanced_fetching = advanced_fetching
         self.client = httpx.Client(
             timeout=timeout_seconds,
             follow_redirects=False,
@@ -167,6 +176,8 @@ class HtmlFetcher:
                         request=response.request,
                         response=response,
                     )
+                if response.status_code in ADAPTIVE_STATUS_CODES and self.advanced_fetching:
+                    return self._fetch_adaptively(url)
                 response.raise_for_status()
                 _assert_public_url(str(response.url))
                 content_type = response.headers.get("content-type", "")
@@ -174,14 +185,23 @@ class HtmlFetcher:
                     raise ValueError(f"Expected HTML but received {content_type or 'unknown content type'}")
                 if len(response.content) > 5_000_000:
                     raise ValueError("HTML response exceeded the 5 MB safety limit")
+                if self.advanced_fetching and self._looks_challenged(response.text):
+                    return self._fetch_adaptively(url)
                 self._write_cache(url, str(response.url), response.text, "http")
                 return FetchResult(url=str(response.url), html=response.text, from_cache=False, method="http")
             except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_error = exc
                 retryable = not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code >= 500
                 if attempt >= self.retry_attempts or not retryable:
-                    if self.browser_fallback and not isinstance(exc, httpx.HTTPStatusError):
-                        return self._fetch_with_browser(url)
+                    adaptive_eligible = (
+                        not isinstance(exc, httpx.HTTPStatusError)
+                        or exc.response.status_code >= 500
+                        or exc.response.status_code in ADAPTIVE_STATUS_CODES
+                    )
+                    if (self.advanced_fetching and adaptive_eligible) or (
+                        self.browser_fallback and not isinstance(exc, httpx.HTTPStatusError)
+                    ):
+                        return self._fetch_adaptively(url, exc)
                     raise
                 time.sleep(0.25 * (2**attempt))
         raise RuntimeError(str(last_error) if last_error else "Fetch failed")
@@ -234,6 +254,78 @@ class HtmlFetcher:
 
     def close(self) -> None:
         self.client.close()
+
+    @staticmethod
+    def _looks_challenged(html: str) -> bool:
+        sample = html[:250_000].lower()
+        return any(marker in sample for marker in CHALLENGE_MARKERS)
+
+    def _fetch_adaptively(self, url: str, original_error: Exception | None = None) -> FetchResult:
+        scrapling_error: Exception | None = None
+        if self.advanced_fetching:
+            try:
+                return self._fetch_with_scrapling(url)
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                scrapling_error = exc
+        if self.browser_fallback:
+            return self._fetch_with_browser(url)
+        error = scrapling_error or original_error
+        raise httpx.TransportError(f"Adaptive fetch failed: {error or 'no fallback is available'}")
+
+    def _fetch_with_scrapling(self, url: str) -> FetchResult:
+        try:
+            from scrapling.fetchers import FetcherSession
+        except ImportError as exc:
+            raise ImportError("Scrapling fetchers are not installed") from exc
+
+        request_url = url
+        try:
+            with FetcherSession(
+                impersonate="chrome",
+                stealthy_headers=True,
+                timeout=self.timeout_seconds,
+                retries=1,
+                follow_redirects=False,
+            ) as session:
+                for _redirect in range(6):
+                    _assert_public_url(request_url)
+                    response = session.get(request_url)
+                    headers = {
+                        str(key).lower(): str(value) for key, value in response.headers.items()
+                    }
+                    if response.status in {301, 302, 303, 307, 308}:
+                        location = headers.get("location")
+                        if not location:
+                            raise ValueError("Adaptive redirect did not include a destination")
+                        request_url = urljoin(request_url, location)
+                        continue
+                    break
+                else:
+                    raise ValueError("Website exceeded the adaptive redirect safety limit")
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"Scrapling request failed: {exc}") from exc
+
+        final_url = str(response.url or request_url)
+        _assert_public_url(final_url)
+        if response.status >= 400:
+            raise RuntimeError(f"Adaptive fetch returned {response.status}")
+        content_type = headers.get("content-type", "")
+        if "html" not in content_type.lower():
+            raise ValueError(f"Expected HTML but received {content_type or 'unknown content type'}")
+        body = (
+            response.body.encode(response.encoding or "utf-8")
+            if isinstance(response.body, str)
+            else response.body
+        )
+        if len(body) > 5_000_000:
+            raise ValueError("HTML response exceeded the 5 MB safety limit")
+        html = body.decode(response.encoding or "utf-8", errors="replace")
+        if self._looks_challenged(html):
+            raise RuntimeError("Adaptive fetch still received a browser challenge")
+        self._write_cache(url, final_url, html, "scrapling-fetcher")
+        return FetchResult(url=final_url, html=html, from_cache=False, method="scrapling-fetcher")
 
     def _fetch_with_browser(self, url: str) -> FetchResult:
         try:
@@ -467,6 +559,7 @@ def enrich_public_pages(
         retry_attempts=config.retry_attempts,
         cache_ttl_hours=config.cache_ttl_hours,
         browser_fallback=config.browser_fallback,
+        advanced_fetching=config.advanced_fetching,
     )
     combined: dict[str, Any] = {"website": url}
     evidence: dict[str, dict[str, str]] = {"website": {"source_url": url, "method": "search", "value": url}}

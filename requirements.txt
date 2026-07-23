@@ -8,6 +8,7 @@ pydantic==2.13.4
 python-dotenv==1.2.2
 pywebview==6.2.1
 psycopg[binary]==3.3.3
+scrapling[fetchers]==0.4.11
 scrapegraphai==2.1.5
 SQLAlchemy==2.0.51
 tldextract==5.3.1

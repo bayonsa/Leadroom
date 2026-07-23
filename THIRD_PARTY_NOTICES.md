@@ -12,6 +12,14 @@ The first Leadroom prototype was built around `SmartScraperGraph`, and the curre
 
 Leadroom is an independent community project. It is not an official ScrapeGraphAI product and is not endorsed by ScrapeGraphAI's maintainers.
 
+## Scrapling
+
+Leadroom optionally uses [Scrapling](https://github.com/D4Vinci/Scrapling) as an adaptive HTTP fetcher when a public website rejects or challenges the standard client.
+
+- Upstream repository: <https://github.com/D4Vinci/Scrapling>
+- Upstream license: BSD 3-Clause
+- Role in Leadroom: TLS-aware fallback fetching for public business pages
+
 ## OpenStreetMap and Geofabrik
 
 The optional local discovery engine can download OpenStreetMap extracts provided by Geofabrik.

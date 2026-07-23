@@ -22,6 +22,10 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     --collect-all webview `
     --hidden-import webview.platforms.edgechromium `
     --hidden-import tiktoken_ext.openai_public `
+    --collect-all scrapling `
+    --collect-all curl_cffi `
+    --collect-all browserforge `
+    --collect-all apify_fingerprint_datapoints `
     --collect-all scrapegraphai `
     run_desktop.py
 exit $LASTEXITCODE
