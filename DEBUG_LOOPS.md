@@ -31,7 +31,7 @@ high-severity defect caps the stage at 7.
 | 0 | Shared baseline and quality gate | 6.5 | 6.5 | In progress |
 | 1 | Discovery, New Run, and run controls | 5.5 | 8.7 | Passed |
 | 2 | Enrichment, deep crawl, normalization, deduplication | 5.2 | 8.8 | Passed |
-| 3 | Repository, collections, editing, and export | TBD | TBD | Pending |
+| 3 | Repository, collections, editing, and export | 4.8 | 8.6 | Passed |
 | 4 | Outreach, compliance, drafts, and email delivery | TBD | TBD | Pending |
 | 5 | Settings, models, storage, themes, and branding | TBD | TBD | Pending |
 | 6 | Desktop shell, packaging, installation, and shutdown | TBD | TBD | Pending |
@@ -118,6 +118,41 @@ ignoring the missing-model failure.
 - Residual risks: an in-flight network request stops at its timeout rather than
   mid-socket; visible-text phone extraction remains UK-oriented, while explicit
   `tel:` links and structured data support international formats.
+
+## Stage 3: Repository, Collections, Editing, and Export
+
+### Findings
+
+| ID | Severity | Defect | Fix | Regression |
+|---|---|---|---|---|
+| REP-001 | High | Editing any non-collection field sent only the first collection and silently removed every other membership. | Edit mode no longer submits collection; moving remains a separate explicit action. | Backend collection preservation and multi-membership tests |
+| REP-002 | High | Deleting one collection added `Uncategorised` even when the lead still belonged to other collections. | Delete now removes only the named membership and uses `Uncategorised` only when none remain. | `test_repository_collections_remain_complete_and_delete_only_the_named_membership` |
+| REP-003 | High | A lead silently lost collection history after 12 distinct search niches. | Removed the hidden cap for `niches` while retaining bounded contacts and services. | Same 20-collection regression test |
+| REP-004 | High | Listing Repository leads ran a write transaction and permanently deleted ineligible legacy records. | Repository GET is now a read-only session; invalid legacy records are omitted without mutation. | `test_repository_read_never_deletes_an_ineligible_legacy_record` |
+| REP-005 | High | Editing Website changed the displayed URL but not the record's domain identity, allowing duplicate future imports. | Website edits must remain on the existing registered business domain. | `test_repository_edit_rejects_identity_change_and_refreshes_manual_evidence` |
+| REP-006 | High | Repository edits left score, explanation, and evidence describing the previous values. | Contacts are revalidated, manual evidence is refreshed, and score/reason are recalculated atomically. | Same repository edit regression test |
+| REP-007 | Medium | Collection casing and whitespace variants could duplicate membership within a lead. | Added whitespace and case-insensitive canonical deduplication across merge/update paths. | Multi-collection regression coverage |
+| REP-008 | Medium | Explicit `domains: []` imported every completed lead because it was treated like omission. | Empty explicit selections now fail request validation; omitted means import all. | Repository API workflow test |
+| REP-009 | Medium | Export ignored active UI filters without making its full-repository scope clear. | Commands now read `All JSON` and `Export all CSV`. | Frontend build and lint |
+| REP-010 | Medium | Repository read and render still load the complete dataset. | Deferred server pagination/virtualization as an explicit scale item; no data-integrity defect remains. | 10,000-lead benchmark required before large deployments |
+
+### Verification
+
+- 177 Python tests pass.
+- Ruff, frontend ESLint, production build, and Vitest pass.
+- Repository regressions cover multi-membership, 20 collections, collection
+  deletion, identity protection, evidence/score refresh, read-only legacy data,
+  explicit empty imports, contact normalization, CSV safety, and exports.
+
+### Score
+
+- Baseline: 4.8/10
+- Loop 1: 7.3/10
+- Loop 2: 8.6/10
+- Final: **8.6/10**
+- Residual risks: server pagination and row virtualization are still required for
+  repositories in the tens of thousands; the mobile row layout is assigned to
+  the cross-app responsive stage.
 
 ## Stage Review Template
 

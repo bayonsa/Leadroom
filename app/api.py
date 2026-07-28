@@ -100,7 +100,7 @@ class LeadUpdate(BaseModel):
 
 class RepositoryImport(BaseModel):
     run_id: str = Field(min_length=1, max_length=36)
-    domains: list[str] | None = Field(default=None, max_length=500)
+    domains: list[str] | None = Field(default=None, min_length=1, max_length=500)
 
 
 class RepositoryLeadUpdate(BaseModel):
@@ -1255,7 +1255,10 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             changes = payload.model_dump(exclude_unset=True)
             collection = changes.pop("collection", None)
             if collection is not None:
-                changes["niches"] = [collection.strip()]
+                cleaned_collection = collection.strip()
+                if not cleaned_collection:
+                    raise ValueError("Collection name cannot be blank")
+                changes["niches"] = [cleaned_collection]
             return repo.update_repository_lead(domain, changes)
         finally:
             repo.engine.dispose()

@@ -32,7 +32,14 @@ from sqlalchemy.orm import (
 )
 
 from app.config import ScraperConfig
-from app.normalizer import is_contactable_lead, promote_verified_business, unique_phones
+from app.filters import same_business_domain
+from app.normalizer import (
+    is_contactable_lead,
+    normalize_phone,
+    promote_verified_business,
+    public_business_email,
+    unique_phones,
+)
 from app.scoring import explain_score, score_lead
 from app.secrets import protect_secret, reveal_secret
 
@@ -431,15 +438,13 @@ class RunRepository:
         }
 
     def list_repository_leads(self) -> list[dict[str, Any]]:
-        with _REPOSITORY_IMPORT_LOCK, self.repository_write_lock(), self.sessions.begin() as session:
+        with self.sessions() as session:
             rows = session.query(RepositoryLeadRecord).order_by(RepositoryLeadRecord.updated_at.desc()).all()
             results: list[dict[str, Any]] = []
             for row in rows:
                 data = _prepare_repository_lead(promote_verified_business(json.loads(row.data_json)))
                 if not _repository_eligible(data):
-                    session.delete(row)
                     continue
-                row.data_json = json.dumps(data, ensure_ascii=False)
                 source_run_ids = json.loads(row.source_run_ids_json)
                 if not data.get("niches") and source_run_ids:
                     source_runs = session.query(RunRecord).filter(RunRecord.id.in_(source_run_ids)).all()
@@ -479,12 +484,49 @@ class RunRepository:
             if row is None:
                 raise KeyError(f"Unknown repository lead: {domain}")
             data = _prepare_repository_lead(json.loads(row.data_json))
+            if (
+                "website" in clean_changes
+                and clean_changes["website"]
+                and not same_business_domain(
+                    str(clean_changes["website"]),
+                    str(data.get("website") or domain),
+                )
+            ):
+                raise ValueError("Website must stay on the lead's existing business domain")
             data.update(clean_changes)
             if "emails" in clean_changes:
                 data["generic_email"] = clean_changes["emails"][0] if clean_changes["emails"] else ""
             if "phones" in clean_changes:
                 data["phone"] = clean_changes["phones"][0] if clean_changes["phones"] else ""
             data = _prepare_repository_lead(data)
+            if not _repository_eligible(data):
+                raise ValueError("A repository lead must keep at least one valid email or phone")
+            evidence = data.get("field_evidence")
+            evidence = evidence if isinstance(evidence, dict) else {}
+            for field in ("business_name", "city_or_area"):
+                if field in clean_changes:
+                    evidence[field] = {
+                        "value": str(data.get(field) or ""),
+                        "source_url": "",
+                        "method": "manual",
+                    }
+            for field, primary in (("emails", "generic_email"), ("phones", "phone")):
+                if field not in clean_changes:
+                    continue
+                if data.get(primary):
+                    manual = {
+                        "value": str(data[primary]),
+                        "source_url": "",
+                        "method": "manual",
+                    }
+                    evidence[field] = manual
+                    evidence[primary] = manual
+                else:
+                    evidence.pop(field, None)
+                    evidence.pop(primary, None)
+            data["field_evidence"] = evidence
+            data["lead_score"] = score_lead(data)
+            data["lead_reason"] = explain_score(data)
             row.data_json = json.dumps(data, ensure_ascii=False)
             row.updated_at = _now()
             result = dict(data)
@@ -508,6 +550,7 @@ class RunRepository:
 
     def merge_repository_collections(self, sources: list[str], target: str) -> dict[str, Any]:
         source_names = {value.strip() for value in sources if value.strip()}
+        source_keys = {value.casefold() for value in source_names}
         target_name = target.strip()
         if not source_names or not target_name:
             raise ValueError("Source and target collections are required")
@@ -521,10 +564,14 @@ class RunRepository:
                         str(value).strip() for value in data.get("niches", []) if str(value).strip()
                     )
                 )
-                if not source_names.intersection(niches):
+                if not source_keys.intersection(value.casefold() for value in niches):
                     continue
-                remaining = [value for value in niches if value not in source_names and value != target_name]
-                data["niches"] = [*remaining, target_name]
+                remaining = [
+                    value
+                    for value in niches
+                    if value.casefold() not in source_keys and value.casefold() != target_name.casefold()
+                ]
+                data["niches"] = _unique_text([*remaining, target_name])
                 row.data_json = json.dumps(_prepare_repository_lead(data), ensure_ascii=False)
                 row.updated_at = _now()
                 changed += 1
@@ -541,12 +588,25 @@ class RunRepository:
             raise ValueError("Collection name is required")
         if collection == "Uncategorised":
             raise ValueError("The Uncategorised collection cannot be deleted")
-        result = self.merge_repository_collections([collection], "Uncategorised")
+        changed = 0
+        collection_key = collection.casefold()
+        with _REPOSITORY_IMPORT_LOCK, self.repository_write_lock(), self.sessions.begin() as session:
+            rows = session.query(RepositoryLeadRecord).all()
+            for row in rows:
+                data = _prepare_repository_lead(json.loads(row.data_json))
+                niches = _unique_text(data.get("niches", []))
+                if collection_key not in {value.casefold() for value in niches}:
+                    continue
+                remaining = [value for value in niches if value.casefold() != collection_key]
+                data["niches"] = remaining or ["Uncategorised"]
+                row.data_json = json.dumps(data, ensure_ascii=False)
+                row.updated_at = _now()
+                changed += 1
         return {
             "status": "deleted",
             "collection": collection,
             "moved_to": "Uncategorised",
-            "updated_leads": result["updated_leads"],
+            "updated_leads": changed,
         }
 
     def repository_lead_count(self) -> int:
@@ -921,16 +981,23 @@ def _repair_mojibake(value: Any) -> Any:
 
 def _prepare_repository_lead(data: dict[str, Any]) -> dict[str, Any]:
     prepared = dict(data)
+    website = str(data.get("website") or "")
     emails = [
-        str(value).strip().lower()
+        email
         for value in [*_contact_values(data.get("emails")), data.get("generic_email", "")]
-        if str(value).strip()
+        if (email := public_business_email(value, website))
     ]
-    phones = unique_phones([*_contact_values(data.get("phones")), data.get("phone", "")])
+    phones = unique_phones(
+        normalize_phone(value)
+        for value in [*_contact_values(data.get("phones")), data.get("phone", "")]
+    )
     prepared["emails"] = list(dict.fromkeys(emails))[:3]
     prepared["phones"] = phones
     prepared["generic_email"] = prepared["emails"][0] if prepared["emails"] else ""
     prepared["phone"] = prepared["phones"][0] if prepared["phones"] else ""
+    for field in ("services", "niches", "locations", "sources"):
+        if isinstance(prepared.get(field), list):
+            prepared[field] = _unique_text(prepared[field])
     return prepared
 
 
@@ -945,11 +1012,13 @@ def _merge_repository_lead(current: dict[str, Any], incoming: dict[str, Any]) ->
     for field in ("emails", "phones", "services", "niches", "locations", "sources"):
         existing = current.get(field) if isinstance(current.get(field), list) else []
         fresh = incoming.get(field) if isinstance(incoming.get(field), list) else []
-        limit = 3 if field in {"emails", "phones"} else 12
+        limit = 3 if field in {"emails", "phones"} else None if field == "niches" else 12
         merged[field] = (
-            unique_phones([*existing, *fresh], limit=limit)
+            unique_phones([*existing, *fresh], limit=limit or 3)
             if field == "phones"
-            else list(dict.fromkeys([*existing, *fresh]))[:limit]
+            else _unique_text([*existing, *fresh])[:limit]
+            if limit
+            else _unique_text([*existing, *fresh])
         )
     for field, value in incoming.items():
         if field not in {"emails", "phones", "services"} and value and not merged.get(field):
@@ -967,3 +1036,15 @@ def _contact_values(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value] if value else []
+
+
+def _unique_text(values: Any) -> list[str]:
+    results: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        cleaned = " ".join(str(value).split())
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
+            results.append(cleaned)
+    return results

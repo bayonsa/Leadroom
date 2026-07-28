@@ -612,6 +612,10 @@ class ApiTests(unittest.TestCase):
             "/api/v1/repository/import",
             json={"run_id": run_id, "domains": ["example.com"]},
         )
+        empty_import = self.client.post(
+            "/api/v1/repository/import",
+            json={"run_id": run_id, "domains": []},
+        )
         listed = self.client.get("/api/v1/repository")
         edited = self.client.patch(
             "/api/v1/repository/example.com",
@@ -633,6 +637,7 @@ class ApiTests(unittest.TestCase):
         deleted = self.client.delete("/api/v1/repository/example.com")
 
         self.assertEqual(imported.json(), {"added": 1, "updated": 0, "skipped": 0, "total": 1})
+        self.assertEqual(empty_import.status_code, 422)
         self.assertEqual(listed.json()["count"], 1)
         self.assertEqual(listed.json()["leads"][0]["emails"], ["info@example.com", "hello@example.com"])
         self.assertEqual(listed.json()["leads"][0]["niches"], ["salons"])

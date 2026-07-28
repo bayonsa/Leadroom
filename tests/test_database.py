@@ -4,10 +4,11 @@ import tempfile
 import threading
 import time
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import ScraperConfig
-from app.database import RunRepository
+from app.database import RepositoryLeadRecord, RunRepository
 
 SITE = {
     "title": "Example Salon",
@@ -310,6 +311,99 @@ class DatabaseTests(unittest.TestCase):
 
         self.assertEqual(self.repository.load_leads(run_id)[0]["phones"], ["02076242434"])
         self.assertEqual(self.repository.list_repository_leads()[0]["phones"], ["02076242434"])
+
+    def test_repository_collections_remain_complete_and_delete_only_the_named_membership(self):
+        run_id = self.repository.create_run(self.config)
+        self.repository.add_candidates(run_id, [SITE])
+        candidate_id = self.repository.claim(run_id, "example.com")
+        self.repository.complete(
+            candidate_id,
+            {
+                "is_valid_lead": True,
+                "business_name": "Example",
+                "website": "https://example.com/",
+                "generic_email": "info@example.com",
+                "lead_score": 8,
+            },
+        )
+        self.repository.import_repository_leads(run_id, ["example.com"])
+        collections = [f"Collection {index}" for index in range(20)]
+        self.repository.update_repository_lead("example.com", {"niches": collections})
+
+        self.repository.delete_repository_collection("Collection 0")
+        saved = self.repository.list_repository_leads()[0]
+
+        self.assertEqual(len(saved["niches"]), 19)
+        self.assertNotIn("Collection 0", saved["niches"])
+        self.assertNotIn("Uncategorised", saved["niches"])
+
+    def test_repository_edit_rejects_identity_change_and_refreshes_manual_evidence(self):
+        run_id = self.repository.create_run(self.config)
+        self.repository.add_candidates(run_id, [SITE])
+        candidate_id = self.repository.claim(run_id, "example.com")
+        self.repository.complete(
+            candidate_id,
+            {
+                "is_valid_lead": True,
+                "business_name": "Example",
+                "website": "https://example.com/",
+                "generic_email": "info@example.com",
+                "phone": "020 7000 0000",
+                "field_evidence": {
+                    "generic_email": {
+                        "value": "info@example.com",
+                        "source_url": "https://example.com/contact",
+                        "method": "html",
+                    },
+                    "phone": {
+                        "value": "020 7000 0000",
+                        "source_url": "https://example.com/contact",
+                        "method": "html",
+                    },
+                },
+                "lead_score": 2,
+            },
+        )
+        self.repository.import_repository_leads(run_id, ["example.com"])
+
+        with self.assertRaisesRegex(ValueError, "existing business domain"):
+            self.repository.update_repository_lead(
+                "example.com",
+                {"website": "https://different.example.org/"},
+            )
+        edited = self.repository.update_repository_lead(
+            "example.com",
+            {"emails": ["hello@example.com"]},
+        )
+
+        self.assertEqual(edited["generic_email"], "hello@example.com")
+        self.assertEqual(edited["field_evidence"]["generic_email"]["method"], "manual")
+        self.assertNotEqual(edited["lead_reason"], "")
+        self.assertEqual(edited["lead_score"], 2)
+
+    def test_repository_read_never_deletes_an_ineligible_legacy_record(self):
+        now = datetime.now(UTC)
+        with self.repository.sessions.begin() as session:
+            session.add(
+                RepositoryLeadRecord(
+                    domain="legacy.example.com",
+                    data_json=json.dumps(
+                        {
+                            "is_valid_lead": True,
+                            "business_name": "Legacy",
+                            "website": "https://legacy.example.com/",
+                            "emails": [],
+                            "phones": [],
+                        }
+                    ),
+                    source_run_ids_json="[]",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        self.assertEqual(self.repository.list_repository_leads(), [])
+        self.assertEqual(self.repository.repository_lead_count(), 1)
 
     def test_repository_skips_completed_results_without_public_contacts(self):
         run_id = self.repository.create_run(self.config)
