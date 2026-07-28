@@ -33,8 +33,8 @@ high-severity defect caps the stage at 7.
 | 2 | Enrichment, deep crawl, normalization, deduplication | 5.2 | 8.8 | Passed |
 | 3 | Repository, collections, editing, and export | 4.8 | 8.6 | Passed |
 | 4 | Outreach, compliance, drafts, and email delivery | 4.9 | 8.7 | Passed |
-| 5 | Settings, models, storage, themes, and branding | 4.8 | 4.8 | In progress |
-| 6 | Desktop shell, packaging, installation, and shutdown | TBD | TBD | Pending |
+| 5 | Settings, models, storage, themes, and branding | 4.8 | 8.8 | Passed |
+| 6 | Desktop shell, packaging, installation, and shutdown | 4.5 | 4.5 | In progress |
 | 7 | Cross-app UI/UX, responsive behavior, accessibility, performance | TBD | TBD | Pending |
 
 ## Stage 0: Shared Baseline
@@ -191,6 +191,45 @@ ignoring the missing-model failure.
   ambiguous outcomes are deliberately quarantined as `uncertain`. Suppression
   hashes are privacy-minimized but are not keyed, so a future schema migration
   should replace SHA-256 with a keyed digest.
+
+## Stage 5: Settings, Models, Storage, Themes, and Branding
+
+### Findings
+
+| ID | Severity | Defect | Fix | Regression |
+|---|---|---|---|---|
+| SET-001 | Critical | Workspace migration deleted the source database before export migration completed, and retry then refused the partial destination. | Added restartable staging, integrity checks, idempotent export merge, and source cleanup only after the complete destination commits. | Interrupted export copy and corrupt staging recovery test |
+| SET-002 | Critical | A database appearing at the destination after scheduling could be adopted and cause the real source to be deleted. | Bound every migration to its source with a durable marker and SHA-256 destination identity check. | `test_migration_never_adopts_a_database_that_appears_after_scheduling` |
+| SET-003 | High | Corrupt `storage.json` silently opened an empty default workspace, making existing data appear lost. | Invalid locator files now stop with an explicit recovery error and never fall back silently. | Invalid locator regression |
+| SET-004 | High | “Use selected folder” accepted corrupt or unrelated SQLite files, while nested move targets could recursively migrate themselves. | Validate integrity and Leadroom schema before scheduling, and reject overlapping move paths. | Corrupt database and nested destination tests |
+| SET-005 | High | Malformed persisted provider, endpoint, model, theme, domains, SMTP values, or accounts could break Settings and new runs. | Added typed read-time sanitization with compare-and-set persistence so stale repairs cannot overwrite a newer user edit. | Stored-settings repair and stale-repair race tests |
+| SET-006 | High | One unreadable DPAPI secret disabled every settings consumer. | Isolated decryption per secret, cleared only the unreadable value in memory, and exposed a re-entry marker without revealing ciphertext. | Unreadable-secret API test |
+| SET-007 | High | Model connection testing accepted a reachable endpoint even when the selected model was missing or unable to generate. | Inventory now must contain the selected model and a real generation request must return usable content. | Compatible-provider and missing-model tests |
+| SET-008 | High | Enrichment could start with a locally selected model that had been deleted outside Leadroom. | Added an installed-model gate before Start, Continue-enrichment, and Retry, leaving the run state unchanged on failure. | Missing-local-model start test |
+| SET-009 | High | The fit test used a reduced ad hoc schema unrelated to production extraction. | It now uses the full `LeadExtraction` schema and parser against realistic HTML with evidence-only instructions. | Ollama benchmark regression |
+| SET-010 | High | Unlimited, non-cancellable model pulls shared workers with discovery and could block forever. | Added a dedicated single-worker download queue, duplicate lock, bounded reads, queued cancellation, and active stream interruption by closing its private HTTP client. | Queued and active cancellation tests |
+| SET-011 | High | Theme requests could finish out of order, and automatic repairs could race with user saves. | Added persistent monotonic theme versions, server-side stale-write rejection, compare-and-set repairs, and client rollback only for the current request. | Stale theme version and repair race tests |
+| SET-012 | Medium | Selecting a model saved the entire unfinished Settings form. | Added a narrow installed-model endpoint so model choice changes only `model_name`. | Model-only persistence test |
+| SET-013 | Medium | Logo validation trusted MIME text and byte length rather than image content or dimensions. | Added Pillow decode/verify, format matching, and dimension/pixel limits; Pillow is now an explicit runtime dependency. | Invalid image bytes test |
+
+### Verification
+
+- 195 Python tests pass, including the final independent-review regressions.
+- Ruff, dependency integrity, frontend ESLint, production build, and Vitest pass.
+- An independent second review confirmed all previously reported critical/high
+  migration, settings-ordering, and active-cancellation findings are fixed.
+
+### Score
+
+- Baseline: 4.8/10
+- Loop 1: 7.2/10
+- Loop 2: 8.1/10
+- Loop 3: 8.8/10
+- Final: **8.8/10**
+- Residual risks: a corrupt storage locator intentionally stops startup but does
+  not yet provide a graphical recovery chooser; that desktop recovery UX belongs
+  to Stage 6. Moving Ollama models still requires restarting Ollama because its
+  model directory is process-level configuration.
 
 ## Stage Review Template
 

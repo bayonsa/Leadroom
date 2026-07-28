@@ -838,7 +838,8 @@ function OllamaModelManager({ modelName, enabled, onSelect }: { modelName: strin
   const models = useQuery({ queryKey: ['ollama-models'], queryFn: api.ollamaModels, enabled, refetchInterval: false })
   const catalog = useQuery({ queryKey: ['ollama-catalog', deferredSearch], queryFn: () => api.ollamaCatalog(deferredSearch), enabled: enabled && pickerOpen, staleTime: 10 * 60 * 1000 })
   const pull = useMutation({ mutationFn: (tag: string) => api.pullOllamaModel(tag), onSuccess: (job) => setJobId(job.id) })
-  const pullStatus = useQuery({ queryKey: ['ollama-pull', jobId], queryFn: () => api.ollamaPullStatus(jobId), enabled: Boolean(jobId), refetchInterval: (query) => ['completed', 'failed'].includes(query.state.data?.status ?? '') ? false : 700 })
+  const pullStatus = useQuery({ queryKey: ['ollama-pull', jobId], queryFn: () => api.ollamaPullStatus(jobId), enabled: Boolean(jobId), refetchInterval: (query) => ['completed', 'failed', 'cancelled'].includes(query.state.data?.status ?? '') ? false : 700 })
+  const cancelPull = useMutation({ mutationFn: () => api.cancelOllamaPull(jobId), onSuccess: (job) => queryClient.setQueryData(['ollama-pull', jobId], job) })
   const benchmark = useMutation({ mutationFn: () => api.benchmarkOllamaModel(modelName) })
   const installed = useMemo(() => models.data?.models ?? [], [models.data?.models])
   const installedNames = useMemo(() => installed.map((model) => model.name || model.model || '').filter(Boolean), [installed])
@@ -880,7 +881,7 @@ function OllamaModelManager({ modelName, enabled, onSelect }: { modelName: strin
         <label className="model-search"><Search /><input autoFocus value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="Find a model..." aria-label="Find model" />{searchTerm && <button type="button" onClick={() => setSearchTerm('')} aria-label="Clear model search"><X /></button>}</label>
         <div className="model-picker-list" role="listbox" aria-label="Ollama model catalog">
           {(models.isLoading || catalog.isLoading) && !pickerRows.length && <LoadingRows />}
-          {pickerRows.map((row) => { const selected = row.name === modelName || row.name === `${modelName}:latest`; const downloading = pullStatus.data?.model === row.name && !['completed', 'failed'].includes(pullStatus.data.status); return <button type="button" role="option" aria-selected={selected} className={`model-picker-row ${selected ? 'selected' : ''}`} disabled={!row.local || downloading} onClick={() => { setModelTag(row.name); if (row.installed) { onSelect(row.name); setPickerOpen(false) } else pull.mutate(row.name) }} key={row.name}><span className="model-row-copy"><strong>{row.name}</strong><small>{row.description || (row.local ? 'Available from the Ollama library' : 'Ollama cloud model')}</small>{row.capabilities.length > 0 && <span className="model-capabilities">{row.capabilities.slice(0, 3).map((item) => <em key={item}>{item}</em>)}</span>}</span><span className="model-row-action">{downloading ? `${pullStatus.data?.percent ?? 0}%` : selected ? <Check /> : row.installed ? <HardDrive /> : row.local ? <Download /> : <Cloud />}</span></button> })}
+          {pickerRows.map((row) => { const selected = row.name === modelName || row.name === `${modelName}:latest`; const downloading = pullStatus.data?.model === row.name && !['completed', 'failed', 'cancelled'].includes(pullStatus.data.status); return <button type="button" role="option" aria-selected={selected} className={`model-picker-row ${selected ? 'selected' : ''}`} disabled={!row.local || downloading} onClick={() => { setModelTag(row.name); if (row.installed) { onSelect(row.name); setPickerOpen(false) } else pull.mutate(row.name) }} key={row.name}><span className="model-row-copy"><strong>{row.name}</strong><small>{row.description || (row.local ? 'Available from the Ollama library' : 'Ollama cloud model')}</small>{row.capabilities.length > 0 && <span className="model-capabilities">{row.capabilities.slice(0, 3).map((item) => <em key={item}>{item}</em>)}</span>}</span><span className="model-row-action">{downloading ? `${pullStatus.data?.percent ?? 0}%` : selected ? <Check /> : row.installed ? <HardDrive /> : row.local ? <Download /> : <Cloud />}</span></button> })}
           {!models.isLoading && !catalog.isLoading && !pickerRows.length && <div className="models-empty"><Search /><span><strong>No matching models</strong><small>Try another name or use an exact model tag below.</small></span></div>}
         </div>
         {catalog.error && <div className="catalog-offline"><AlertTriangle />Online catalog unavailable. Installed models still work.</div>}
@@ -889,7 +890,7 @@ function OllamaModelManager({ modelName, enabled, onSelect }: { modelName: strin
     </div>
     <details className="manual-model-download"><summary>Install an exact model tag</summary><form className="model-download" onSubmit={(event) => { event.preventDefault(); pull.mutate(modelTag.trim()) }}><label>Model tag<input required value={modelTag} onChange={(event) => setModelTag(event.target.value)} placeholder="e.g. qwen3.5:4b" /></label><button className="button ghost" disabled={!modelTag.trim() || pull.isPending || pullStatus.data?.status === 'downloading'}><Download />{pull.isPending ? 'Starting...' : 'Download'}</button></form></details>
     {(pull.error || pullStatus.error) && <ErrorPanel error={(pull.error || pullStatus.error) as Error} />}
-    {pullStatus.data && <div className={`download-progress download-${pullStatus.data.status}`}><div><span><strong>{pullStatus.data.model}</strong><small>{pullStatus.data.error || pullStatus.data.message}</small></span><em>{pullStatus.data.status === 'completed' ? 'Installed' : pullStatus.data.status === 'failed' ? 'Failed' : `${pullStatus.data.percent}%`}</em></div><div className="download-track"><span style={{ width: `${pullStatus.data.percent}%` }} /></div>{pullStatus.data.total > 0 && <small>{formatModelSize(pullStatus.data.completed)} of {formatModelSize(pullStatus.data.total)}</small>}</div>}
+    {pullStatus.data && <div className={`download-progress download-${pullStatus.data.status}`}><div><span><strong>{pullStatus.data.model}</strong><small>{pullStatus.data.error || pullStatus.data.message}</small></span><span className="download-status-actions"><em>{pullStatus.data.status === 'completed' ? 'Installed' : pullStatus.data.status === 'failed' ? 'Failed' : pullStatus.data.status === 'cancelled' ? 'Cancelled' : `${pullStatus.data.percent}%`}</em>{['queued', 'downloading'].includes(pullStatus.data.status) && <button type="button" className="icon-button" aria-label="Cancel model download" title="Cancel model download" disabled={cancelPull.isPending} onClick={() => cancelPull.mutate()}><CircleStop /></button>}</span></div><div className="download-track" role="progressbar" aria-label={`Downloading ${pullStatus.data.model}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={pullStatus.data.percent}><span style={{ width: `${pullStatus.data.percent}%` }} /></div>{pullStatus.data.total > 0 && <small>{formatModelSize(pullStatus.data.completed)} of {formatModelSize(pullStatus.data.total)}</small>}</div>}
     <div className="model-benchmark"><div><span className="model-manager-icon"><Gauge /></span><span><strong>Lead extraction fit test</strong><small>Checks structured output, contact accuracy, services, location, and speed.</small></span></div><button type="button" className="button ghost" disabled={!isInstalled || benchmark.isPending} onClick={() => benchmark.mutate()}><Gauge />{benchmark.isPending ? 'Testing model...' : 'Test selected model'}</button></div>
     {!isInstalled && installed.length > 0 && <p className="benchmark-hint">Select an installed model or download <strong>{modelName}</strong> before testing.</p>}
     {benchmark.error && <ErrorPanel error={benchmark.error} />}
@@ -1021,6 +1022,7 @@ function SettingsPage() {
   const [domainInput, setDomainInput] = useState('')
   const [localError, setLocalError] = useState('')
   const [savedNotice, setSavedNotice] = useState(0)
+  const themeVersion = useRef(0)
   const form = formOverride ?? (settings.data ? {
     model_provider: settings.data.model_provider, model_name: settings.data.model_name,
     model_endpoint: settings.data.model_endpoint, clear_api_key: false, blocked_domains: settings.data.blocked_domains,
@@ -1042,9 +1044,23 @@ function SettingsPage() {
     },
   })
   const themeSaved = useMutation({
-    mutationFn: api.updateTheme,
+    mutationFn: ({ theme, version }: { theme: ThemeId; version: number; previous: ThemeId }) => api.updateTheme(theme, version),
+    onSuccess: (data, request) => {
+      if (request.version !== themeVersion.current) return
+      queryClient.setQueryData(['settings'], data)
+      setSavedNotice((value) => value + 1)
+    },
+    onError: (_error, request) => {
+      if (request.version !== themeVersion.current) return
+      applyTheme(request.previous)
+      setForm((current) => current ? { ...current, theme: request.previous } : current)
+    },
+  })
+  const modelSaved = useMutation({
+    mutationFn: api.selectOllamaModel,
     onSuccess: (data) => {
       queryClient.setQueryData(['settings'], data)
+      setForm((current) => current ? { ...current, model_name: data.model_name } : current)
       setSavedNotice((value) => value + 1)
     },
   })
@@ -1082,7 +1098,7 @@ function SettingsPage() {
   if (settings.isLoading || !form) return <section className="narrow"><PageHeader eyebrow="System" title="Settings" subtitle="Workspace identity, model runtime, and discovery rules" /><LoadingRows /></section>
   const apiConfigured = settings.data?.api_key_configured && !form.clear_api_key
   return <section className="settings-page narrow"><PageHeader eyebrow="System" title="Settings" subtitle="Workspace identity, model runtime, and discovery rules" action={<button className="button primary" disabled={saved.isPending} onClick={() => saved.mutate(form)}><Save />{saved.isPending ? 'Saving...' : 'Save changes'}</button>} />
-    {(saved.error || themeSaved.error) && <ErrorPanel error={(saved.error || themeSaved.error) as Error} />}{testConnection.error && <ErrorPanel error={testConnection.error} />}{localError && <div className="inline-field-error" role="alert"><AlertTriangle />{localError}</div>}
+    {(saved.error || themeSaved.error || modelSaved.error) && <ErrorPanel error={(saved.error || themeSaved.error || modelSaved.error) as Error} />}{testConnection.error && <ErrorPanel error={testConnection.error} />}{localError && <div className="inline-field-error" role="alert"><AlertTriangle />{localError}</div>}
     <AnimatePresence>{savedNotice > 0 && <motion.div
       className="settings-success"
       role="status"
@@ -1100,13 +1116,13 @@ function SettingsPage() {
         <label>Workspace name<input value={form.workspace_name} maxLength={40} onChange={(event) => setForm({ ...form, workspace_name: event.target.value })} /></label>
         <label>Subtitle<input value={form.workspace_subtitle} maxLength={60} onChange={(event) => setForm({ ...form, workspace_subtitle: event.target.value })} /></label>
       </div></section>
-      <ThemeSelector selected={form.theme} onSelect={(theme) => { applyTheme(theme); setForm({ ...form, theme }); themeSaved.mutate(theme) }} />
+      <ThemeSelector selected={form.theme} onSelect={(theme) => { const previous = form.theme; const version = Math.max(Date.now(), themeVersion.current + 1); themeVersion.current = version; applyTheme(theme); setForm({ ...form, theme }); themeSaved.mutate({ theme, version, previous }) }} />
       <StorageSettingsPanel />
       <section className="settings-section model-settings"><header><div><span className="settings-icon"><Bot /></span><div><h2>Model runtime</h2><p>Default connection for new enrichment runs.</p></div></div><span className={`connection-state ${testConnection.isSuccess ? 'is-online' : ''}`}><i />{testConnection.isSuccess ? 'Connected' : form.model_provider === 'ollama' ? 'Local' : 'API'}</span></header><div className="settings-body">
         <fieldset className="provider-switch"><legend>Provider</legend><label className={form.model_provider === 'ollama' ? 'selected' : ''}><input type="radio" checked={form.model_provider === 'ollama'} onChange={() => setForm({ ...form, model_provider: 'ollama', model_name: 'llama3.2:3b', model_endpoint: 'http://localhost:11434' })} /><Cpu /><span><strong>Ollama</strong><small>Local model</small></span><Check /></label><label className={form.model_provider === 'openai_compatible' ? 'selected' : ''}><input type="radio" checked={form.model_provider === 'openai_compatible'} onChange={() => setForm({ ...form, model_provider: 'openai_compatible', model_name: 'gpt-4o-mini', model_endpoint: 'https://api.openai.com/v1' })} /><Server /><span><strong>API</strong><small>OpenAI-compatible</small></span><Check /></label></fieldset>
         <div className={`model-fields ${form.model_provider === 'ollama' ? 'ollama-fields' : ''}`}>{form.model_provider === 'openai_compatible' && <label>Model name<input value={form.model_name} onChange={(event) => setForm({ ...form, model_name: event.target.value })} placeholder="Model identifier" /></label>}<label className="endpoint-field"><span>Endpoint</span><span className="input-with-icon"><Link2 /><input type="url" value={form.model_endpoint} onChange={(event) => setForm({ ...form, model_endpoint: event.target.value })} /></span></label>{form.model_provider === 'openai_compatible' && <label className="api-key-field"><span>API key {apiConfigured && <em>Configured</em>}</span><span className="input-with-icon"><KeyRound /><input type="password" value={form.api_key ?? ''} onChange={(event) => setForm({ ...form, api_key: event.target.value, clear_api_key: false })} placeholder={apiConfigured ? 'Keep existing key' : 'Enter API key'} /></span></label>}</div>
         <div className="model-actions">{apiConfigured && <button className="button text-danger" onClick={() => setForm({ ...form, api_key: '', clear_api_key: true })}><Trash2 />Remove key</button>}<button className="button ghost" disabled={testConnection.isPending} onClick={() => testConnection.mutate(form)}><Activity />{testConnection.isPending ? 'Testing...' : 'Save & test connection'}</button></div>
-        {form.model_provider === 'ollama' && <OllamaModelManager modelName={form.model_name} enabled={settings.data?.model_provider === 'ollama'} onSelect={(model) => { const next = { ...form, model_name: model }; setForm(next); saved.mutate(next) }} />}
+        {form.model_provider === 'ollama' && <OllamaModelManager modelName={form.model_name} enabled={settings.data?.model_provider === 'ollama'} onSelect={(model) => { setForm({ ...form, model_name: model }); modelSaved.mutate(model) }} />}
       </div></section>
       <EmailAccountsSettings />
       <LocalDataSettings />

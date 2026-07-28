@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import filecmp
+import hashlib
 import json
 import os
 import shutil
@@ -8,6 +10,10 @@ import time
 import uuid
 from pathlib import Path
 from typing import Any
+
+
+class StorageConfigurationError(ValueError):
+    pass
 
 
 def default_storage_paths(bootstrap_root: Path) -> dict[str, Path]:
@@ -22,12 +28,20 @@ def default_storage_paths(bootstrap_root: Path) -> dict[str, Path]:
 
 def load_storage_config(config_path: Path, bootstrap_root: Path) -> dict[str, Any]:
     defaults = default_storage_paths(bootstrap_root)
-    try:
-        stored = json.loads(config_path.read_text(encoding="utf-8"))
+    if not config_path.exists():
+        stored: dict[str, Any] = {}
+    else:
+        try:
+            stored = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StorageConfigurationError(
+                f"Storage configuration is unreadable: {config_path}. "
+                "Restore or remove this file after locating your existing workspace."
+            ) from exc
         if not isinstance(stored, dict):
-            stored = {}
-    except (OSError, json.JSONDecodeError):
-        stored = {}
+            raise StorageConfigurationError(
+                f"Storage configuration must contain an object: {config_path}"
+            )
     data_root = _configured_path(stored.get("data_root")) or defaults["data_root"]
     downloads_root = _configured_path(stored.get("downloads_root"))
     return {
@@ -96,11 +110,15 @@ def schedule_storage_change(
         raise ValueError("Choose whether to move current data or use the selected folder")
     current_data_root = current_data_root.resolve()
     if data_action == "move" and data_target != current_data_root:
+        _reject_overlapping_paths(current_data_root, data_target, "workspace")
+    if data_action == "move" and data_target != current_data_root:
         target_database = data_target / "lead_scraper.db"
         if target_database.exists():
             raise ValueError(
                 "The selected data folder already contains lead_scraper.db. Choose use existing instead."
             )
+    if data_action == "use" and (data_target / "lead_scraper.db").exists():
+        _validate_database(data_target / "lead_scraper.db", require_leadroom_schema=True)
     current = load_storage_config(config_path, bootstrap_root)
     payload = {
         "data_root": str(data_target),
@@ -114,8 +132,14 @@ def schedule_storage_change(
         current_cache = _configured_path(current.get("cache_dir"))
         current_browser = _configured_path(current.get("browser_dir"))
         if current_cache and current_cache != downloads_target / "cache":
+            _reject_overlapping_paths(current_cache, downloads_target / "cache", "cache")
             payload["previous_cache_dir"] = str(current_cache)
         if current_browser and current_browser != downloads_target / "playwright":
+            _reject_overlapping_paths(
+                current_browser,
+                downloads_target / "playwright",
+                "browser downloads",
+            )
             payload["previous_browser_dir"] = str(current_browser)
     _set_ollama_models_environment(downloads_target / "ollama" / "models")
     save_storage_config(config_path, payload)
@@ -153,26 +177,61 @@ def _migrate_workspace(source: Path, target: Path) -> None:
     target.mkdir(parents=True, exist_ok=True)
     source_database = source / "lead_scraper.db"
     target_database = target / "lead_scraper.db"
+    migration_root = target / ".leadroom-workspace-migration"
+    staged_database = migration_root / "lead_scraper.db"
+    staged_exports = migration_root / "exports"
+    marker_path = migration_root / "marker.json"
     if source_database.exists():
         if target_database.exists():
-            raise FileExistsError(f"Refusing to overwrite existing database at {target_database}")
-        temporary = target / "lead_scraper.db.migrating"
-        temporary.unlink(missing_ok=True)
-        source_connection = sqlite3.connect(source_database)
-        target_connection = sqlite3.connect(temporary)
-        try:
-            source_connection.backup(target_connection)
-            integrity = target_connection.execute("PRAGMA integrity_check").fetchone()
-        finally:
-            target_connection.close()
-            source_connection.close()
-        if not integrity or integrity[0] != "ok":
-            temporary.unlink(missing_ok=True)
-            raise RuntimeError("The migrated database failed its integrity check")
-        temporary.replace(target_database)
+            marker = _read_migration_marker(marker_path)
+            if (
+                marker.get("source") != str(source.resolve())
+                or marker.get("database_sha256") != _file_sha256(target_database)
+            ):
+                raise FileExistsError(
+                    f"Refusing to replace or adopt an unrelated database at {target_database}"
+                )
+            _validate_database(target_database)
+        else:
+            migration_root.mkdir(parents=True, exist_ok=True)
+            marker = _read_migration_marker(marker_path) if marker_path.exists() else {}
+            if marker and marker.get("source") != str(source.resolve()):
+                raise RuntimeError("The pending migration belongs to a different workspace")
+            if staged_database.exists():
+                try:
+                    _validate_database(staged_database)
+                except ValueError:
+                    staged_database.unlink(missing_ok=True)
+            if not staged_database.exists():
+                source_connection = sqlite3.connect(source_database)
+                target_connection = sqlite3.connect(staged_database)
+                try:
+                    source_connection.backup(target_connection)
+                finally:
+                    target_connection.close()
+                    source_connection.close()
+            _validate_database(staged_database)
+            _write_migration_marker(
+                marker_path,
+                {
+                    "source": str(source.resolve()),
+                    "database_sha256": _file_sha256(staged_database),
+                },
+            )
+    if (source / "exports").exists():
+        migration_root.mkdir(parents=True, exist_ok=True)
+        _copy_directory(source / "exports", staged_exports)
+    if source_database.exists() and not target_database.exists():
+        staged_database.replace(target_database)
+    _merge_directory(staged_exports, target / "exports")
+    if (source / "exports").exists():
+        shutil.rmtree(source / "exports")
+    if source_database.exists():
         for suffix in ("", "-wal", "-shm"):
             _unlink_with_retry(source / f"lead_scraper.db{suffix}")
-    _merge_directory(source / "exports", target / "exports")
+    if migration_root.exists():
+        marker_path.unlink(missing_ok=True)
+        migration_root.rmdir()
 
 
 def _unlink_with_retry(path: Path, attempts: int = 8) -> None:
@@ -196,13 +255,83 @@ def _merge_directory(source: Path, target: Path) -> None:
         destination = target / item.name
         if item.is_dir():
             _merge_directory(item, destination)
-            item.rmdir()
         elif destination.exists():
-            preserved = target / f"{item.stem}-from-previous-{uuid.uuid4().hex[:8]}{item.suffix}"
-            shutil.move(str(item), str(preserved))
+            if filecmp.cmp(item, destination, shallow=False):
+                item.unlink()
+            else:
+                preserved = target / f"{item.stem}-from-previous-{uuid.uuid4().hex[:8]}{item.suffix}"
+                shutil.move(str(item), str(preserved))
         else:
             shutil.move(str(item), str(destination))
     source.rmdir()
+
+
+def _copy_directory(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        destination = target / item.name
+        if item.is_dir():
+            _copy_directory(item, destination)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_suffix(f"{destination.suffix}.{uuid.uuid4().hex}.tmp")
+            shutil.copy2(item, temporary)
+            temporary.replace(destination)
+
+
+def _validate_database(path: Path, require_leadroom_schema: bool = False) -> None:
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        integrity = connection.execute("PRAGMA quick_check").fetchone()
+        tables = {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+        }
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(f"The selected database is not a valid SQLite workspace: {path}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    if not integrity or integrity[0] != "ok":
+        raise ValueError(f"The selected database failed its integrity check: {path}")
+    if require_leadroom_schema and not {"runs", "app_settings"}.issubset(tables):
+        raise ValueError("The selected database is not a compatible Leadroom workspace")
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_migration_marker(path: Path) -> dict[str, str]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _write_migration_marker(path: Path, value: dict[str, str]) -> None:
+    temporary = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    temporary.write_text(json.dumps(value), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _reject_overlapping_paths(source: Path, target: Path, label: str) -> None:
+    source = source.resolve()
+    target = target.resolve()
+    if source == target:
+        return
+    if source.is_relative_to(target) or target.is_relative_to(source):
+        raise ValueError(
+            f"The selected {label} folder cannot contain, or be contained by, its current folder"
+        )
 
 
 def _configured_path(value: Any) -> Path | None:

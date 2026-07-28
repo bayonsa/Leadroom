@@ -75,8 +75,8 @@ export const api = {
   settings: () => request<WorkspaceSettings>('/settings'),
   updateSettings: (payload: WorkspaceSettingsUpdate) =>
     request<WorkspaceSettings>('/settings', { method: 'PUT', body: JSON.stringify(payload) }),
-  updateTheme: (theme: WorkspaceSettings['theme']) =>
-    request<WorkspaceSettings>('/settings/theme', { method: 'PATCH', body: JSON.stringify({ theme }) }),
+  updateTheme: (theme: WorkspaceSettings['theme'], version: number) =>
+    request<WorkspaceSettings>('/settings/theme', { method: 'PATCH', body: JSON.stringify({ theme, version }) }),
   storageSettings: () => request<StorageSettings>('/settings/storage'),
   updateStorageSettings: (payload: StorageSettingsUpdate) =>
     request<StorageSettings>('/settings/storage', { method: 'PUT', body: JSON.stringify(payload) }),
@@ -92,8 +92,10 @@ export const api = {
   testEmailConnection: () => request<{ status: string; host: string; port: number; security: string; sender: string }>('/settings/test-email', { method: 'POST' }),
   ollamaModels: () => request<OllamaModelsResponse>('/settings/ollama/models'),
   ollamaCatalog: (query: string) => request<OllamaCatalogResponse>(`/settings/ollama/catalog?q=${encodeURIComponent(query)}`),
+  selectOllamaModel: (model: string) => request<WorkspaceSettings>('/settings/ollama/model', { method: 'PATCH', body: JSON.stringify({ model }) }),
   pullOllamaModel: (model: string) => request<OllamaPullJob>('/settings/ollama/pull', { method: 'POST', body: JSON.stringify({ model }) }),
   ollamaPullStatus: (jobId: string) => request<OllamaPullJob>(`/settings/ollama/pulls/${jobId}`),
+  cancelOllamaPull: (jobId: string) => request<OllamaPullJob>(`/settings/ollama/pulls/${jobId}/cancel`, { method: 'POST' }),
   benchmarkOllamaModel: (model: string) => request<ModelBenchmark>('/settings/ollama/benchmark', { method: 'POST', body: JSON.stringify({ model }) }),
   listDrafts: () => request<OutreachDraft[]>('/outreach/drafts'),
   createDraft: (payload: Record<string, unknown>) =>

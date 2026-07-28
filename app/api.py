@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field, field_validator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -40,6 +41,7 @@ from app.config import DEFAULT_BLOCKED_DOMAINS, ScraperConfig
 from app.database import RUN_TERMINAL, RunRepository
 from app.email_delivery import DeliveryUncertainError, EmailDeliveryConfig, SMTPEmailProvider
 from app.local_data import LocalDataService
+from app.models import LeadExtraction
 from app.normalizer import LEAD_FIELDS, clean_leads
 from app.pipeline import run_pipeline
 from app.search import SearchStopped, search_business_sites
@@ -52,6 +54,18 @@ from app.storage import (
 
 DEFAULT_WORKSPACE_NAME = "Leadroom"
 DEFAULT_WORKSPACE_SUBTITLE = "Signal desk"
+VALID_THEMES = {
+    "brushstroke",
+    "genesis",
+    "flip7",
+    "rawblock",
+    "evreghen",
+    "ember",
+    "insightdeck",
+    "vercel",
+    "trustblue",
+    "zengrid",
+}
 
 
 def _text_or_default(value: Any, default: str) -> Any:
@@ -273,6 +287,18 @@ class SettingsUpdate(BaseModel):
             raise ValueError("logo data is invalid") from exc
         if len(decoded) > 500_000:
             raise ValueError("logo must be smaller than 500 KB")
+        try:
+            with Image.open(io.BytesIO(decoded)) as image:
+                width, height = image.size
+                detected_format = str(image.format or "").lower()
+                image.verify()
+        except (OSError, SyntaxError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+            raise ValueError("logo data is not a valid image") from exc
+        expected_format = {"png": "png", "jpeg": "jpeg", "webp": "webp"}[match.group(1)]
+        if detected_format != expected_format:
+            raise ValueError("logo content does not match its declared image type")
+        if width > 4096 or height > 4096 or width * height > 16_000_000:
+            raise ValueError("logo dimensions must not exceed 4096 px or 16 megapixels")
         return value
 
 
@@ -291,6 +317,7 @@ class ThemeUpdate(BaseModel):
     theme: str = Field(
         pattern="^(brushstroke|genesis|flip7|rawblock|evreghen|ember|insightdeck|vercel|trustblue|zengrid)$"
     )
+    version: int = Field(default=0, ge=0)
 
 
 class EmailAccountUpdate(BaseModel):
@@ -338,12 +365,23 @@ class SpaStaticFiles(StaticFiles):
 def _settings_payload(repo: RunRepository) -> dict[str, Any]:
     stored = repo.app_settings()
     defaults = ScraperConfig(niche="businesses", location="London UK")
-    provider = stored.get("model_provider", "ollama")
-    model_name = stored.get("model_name", defaults.model.split("/", 1)[-1])
-    endpoint = stored.get("model_endpoint", defaults.ollama_base_url)
+    repairs: dict[str, str] = {}
+    provider = str(stored.get("model_provider") or "").strip()
+    if provider not in {"ollama", "openai_compatible"}:
+        provider = "ollama"
+        repairs["model_provider"] = provider
+    model_name = str(stored.get("model_name") or "").strip()
+    if not model_name:
+        model_name = defaults.model.split("/", 1)[-1]
+        repairs["model_name"] = model_name
+    endpoint = str(stored.get("model_endpoint") or "").strip().rstrip("/")
+    if not _stored_endpoint_is_safe(endpoint):
+        provider = "ollama"
+        endpoint = defaults.ollama_base_url
+        repairs.update({"model_provider": provider, "model_endpoint": endpoint})
     try:
         legacy_custom = json.loads(stored.get("custom_blocked_domains", "[]"))
-        blocked_domains = (
+        raw_blocked = (
             json.loads(stored["blocked_domains"])
             if "blocked_domains" in stored
             else [
@@ -352,7 +390,38 @@ def _settings_payload(repo: RunRepository) -> dict[str, Any]:
             ]
         )
     except (json.JSONDecodeError, TypeError):
-        blocked_domains = list(DEFAULT_BLOCKED_DOMAINS)
+        raw_blocked = list(DEFAULT_BLOCKED_DOMAINS)
+    blocked_domains = _sanitized_domains(raw_blocked)
+    if not isinstance(raw_blocked, list) or blocked_domains != raw_blocked:
+        repairs["blocked_domains"] = json.dumps(blocked_domains)
+    workspace_name = _text_or_default(stored.get("workspace_name"), DEFAULT_WORKSPACE_NAME)
+    workspace_subtitle = _text_or_default(
+        stored.get("workspace_subtitle"), DEFAULT_WORKSPACE_SUBTITLE
+    )
+    if stored.get("workspace_name") != workspace_name:
+        repairs["workspace_name"] = workspace_name
+    if stored.get("workspace_subtitle") != workspace_subtitle:
+        repairs["workspace_subtitle"] = workspace_subtitle
+    theme = str(stored.get("theme") or "")
+    if theme not in VALID_THEMES:
+        theme = "brushstroke"
+        repairs["theme"] = theme
+    try:
+        smtp_port = int(stored.get("smtp_port", "587") or 587)
+        if not 1 <= smtp_port <= 65535:
+            raise ValueError
+    except (TypeError, ValueError):
+        smtp_port = 587
+        repairs["smtp_port"] = "587"
+    smtp_security = str(stored.get("smtp_security") or "starttls")
+    if smtp_security not in {"starttls", "ssl", "none"}:
+        smtp_security = "starttls"
+        repairs["smtp_security"] = smtp_security
+    if repairs:
+        repo.repair_app_settings(
+            {key: stored.get(key) for key in repairs},
+            repairs,
+        )
     prefix = "ollama" if provider == "ollama" else "oneapi"
     accounts, default_account_id = _email_accounts(stored)
     return {
@@ -363,13 +432,13 @@ def _settings_payload(repo: RunRepository) -> dict[str, Any]:
         "ollama_base_url": endpoint,
         "api_key_configured": bool(stored.get("llm_api_key")),
         "blocked_domains": sorted(set(blocked_domains)),
-        "workspace_name": _text_or_default(stored.get("workspace_name"), DEFAULT_WORKSPACE_NAME),
-        "workspace_subtitle": _text_or_default(stored.get("workspace_subtitle"), DEFAULT_WORKSPACE_SUBTITLE),
+        "workspace_name": workspace_name,
+        "workspace_subtitle": workspace_subtitle,
         "logo_data_url": stored.get("logo_data_url", ""),
-        "theme": stored.get("theme", "brushstroke"),
+        "theme": theme,
         "smtp_host": stored.get("smtp_host", ""),
-        "smtp_port": int(stored.get("smtp_port", "587") or 587),
-        "smtp_security": stored.get("smtp_security", "starttls"),
+        "smtp_port": smtp_port,
+        "smtp_security": smtp_security,
         "smtp_username": stored.get("smtp_username", ""),
         "smtp_password_configured": bool(stored.get("smtp_password")),
         "smtp_from_email": stored.get("smtp_from_email", ""),
@@ -380,10 +449,46 @@ def _settings_payload(repo: RunRepository) -> dict[str, Any]:
         ],
         "default_email_account_id": default_account_id,
         "email_configured": any(_email_account_ready(account) for account in accounts),
+        "secret_errors": sorted(
+            key.removesuffix("_unreadable")
+            for key, value in stored.items()
+            if key.endswith("_unreadable") and value == "true"
+        ),
         "limits": {"max_results_per_query": 100, "max_sites": 500},
         "search_providers": ["hybrid", "osm_local", "auto", "brave", "ddgs"],
         "brave_configured": bool(defaults.brave_search_api_key),
     }
+
+
+def _stored_endpoint_is_safe(value: str) -> bool:
+    if not value.startswith(("http://", "https://")):
+        return False
+    parsed = urlparse(value)
+    host = parsed.hostname or ""
+    if parsed.scheme == "https":
+        return bool(host)
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _sanitized_domains(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return list(DEFAULT_BLOCKED_DOMAINS)
+    clean: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        domain = value.strip().lower().removeprefix("www.")
+        if (
+            re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\.[a-z]{2,63}", domain)
+            and domain not in clean
+        ):
+            clean.append(domain)
+    return clean
 
 
 def _storage_payload(app: FastAPI) -> dict[str, Any]:
@@ -434,13 +539,28 @@ def _email_accounts(stored: dict[str, str]) -> tuple[list[dict[str, Any]], str]:
             accounts = [dict(item) for item in raw if isinstance(item, dict) and item.get("id")]
     except (json.JSONDecodeError, TypeError):
         accounts = []
+    sanitized_accounts: list[dict[str, Any]] = []
+    for account in accounts:
+        try:
+            port = int(account.get("port", 587))
+        except (TypeError, ValueError):
+            continue
+        security = str(account.get("security", "starttls"))
+        if not 1 <= port <= 65535 or security not in {"starttls", "ssl", "none"}:
+            continue
+        sanitized_accounts.append({**account, "port": port, "security": security})
+    accounts = sanitized_accounts
     if not accounts and stored.get("smtp_host") and stored.get("smtp_from_email"):
+        try:
+            legacy_port = int(stored.get("smtp_port", "587") or 587)
+        except (TypeError, ValueError):
+            legacy_port = 587
         accounts = [
             {
                 "id": "legacy-default",
                 "label": stored.get("smtp_from_name") or stored.get("smtp_from_email") or "Primary account",
                 "host": stored.get("smtp_host", ""),
-                "port": int(stored.get("smtp_port", "587") or 587),
+                "port": legacy_port,
                 "security": stored.get("smtp_security", "starttls"),
                 "username": stored.get("smtp_username", ""),
                 "password": stored.get("smtp_password", ""),
@@ -547,7 +667,11 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     ).resolve()
     app.state.choose_directory = None
     app.state.executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="lead-worker")
+    app.state.model_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-download")
     app.state.model_downloads: dict[str, dict[str, Any]] = {}
+    app.state.model_download_futures: dict[str, Any] = {}
+    app.state.model_download_clients: dict[str, httpx.Client] = {}
+    app.state.model_download_lock = threading.RLock()
     app.state.ollama_catalog_cache: dict[str, dict[str, Any]] = {}
     app.state.outreach_send_jobs: dict[str, dict[str, Any]] = {}
     app.state.outreach_send_configs: dict[str, EmailDeliveryConfig] = {}
@@ -559,6 +683,13 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     @app.on_event("shutdown")
     def shutdown_workers() -> None:
         app.state.shutting_down.set()
+        with app.state.model_download_lock:
+            for job in app.state.model_downloads.values():
+                if job["status"] in {"queued", "downloading"}:
+                    job["stop_requested"] = True
+            download_clients = list(app.state.model_download_clients.values())
+        for client in download_clients:
+            client.close()
         queued_drafts: list[str] = []
         with app.state.outreach_send_lock:
             for job in app.state.outreach_send_jobs.values():
@@ -574,6 +705,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
                 service.close()
         app.state.discovery_jobs.clear()
         app.state.enrichment_jobs.clear()
+        app.state.model_executor.shutdown(wait=False, cancel_futures=True)
         app.state.executor.shutdown(wait=False, cancel_futures=True)
 
     def schedule_discovery(
@@ -639,6 +771,24 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         models = payload.get("models", []) if isinstance(payload, dict) else []
         return [model for model in models if isinstance(model, dict)]
 
+    def assert_model_ready(config: ScraperConfig) -> None:
+        if not config.model.startswith("ollama/"):
+            return
+        selected = config.model.split("/", 1)[-1]
+        installed = {
+            str(item.get("name") or item.get("model"))
+            for item in ollama_models(config.ollama_base_url.rstrip("/"))
+            if item.get("name") or item.get("model")
+        }
+        aliases = {selected, f"{selected}:latest" if ":" not in selected else selected}
+        if not installed.intersection(aliases):
+            raise ValueError(
+                f"The selected Ollama model '{selected}' is not installed. "
+                "Open Settings to download or select an installed model."
+            )
+
+    app.state.model_validator = assert_model_ready
+
     def ollama_catalog(query: str) -> list[dict[str, Any]]:
         cache_key = query.strip().lower()
         cached = app.state.ollama_catalog_cache.get(cache_key)
@@ -695,13 +845,28 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
 
     def pull_ollama_model(job_id: str, endpoint: str, model: str) -> None:
         job = app.state.model_downloads[job_id]
+        client: httpx.Client | None = None
         try:
-            timeout = httpx.Timeout(connect=10, read=None, write=30, pool=10)
-            with httpx.stream(
-                "POST", f"{endpoint}/api/pull", json={"model": model, "stream": True}, timeout=timeout
+            timeout = httpx.Timeout(connect=10, read=60, write=30, pool=10)
+            client = httpx.Client(timeout=timeout)
+            with app.state.model_download_lock:
+                app.state.model_download_clients[job_id] = client
+            with client.stream(
+                "POST",
+                f"{endpoint}/api/pull",
+                json={"model": model, "stream": True},
             ) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():
+                    if job.get("stop_requested") or app.state.shutting_down.is_set():
+                        job.update(
+                            {
+                                "status": "cancelled",
+                                "message": "Download cancelled",
+                                "updated_at": datetime.now().astimezone().isoformat(),
+                            }
+                        )
+                        break
                     if not line:
                         continue
                     update = json.loads(line)
@@ -721,17 +886,33 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
                     )
                     if update.get("status") == "success":
                         job.update({"status": "completed", "message": "Model installed", "percent": 100})
-            if job["status"] != "completed":
+            if job["status"] not in {"completed", "cancelled"}:
                 job.update({"status": "completed", "message": "Model installed", "percent": 100})
         except Exception as exc:
-            job.update(
-                {
-                    "status": "failed",
-                    "message": "Download failed",
-                    "error": str(exc) or type(exc).__name__,
-                    "updated_at": datetime.now().astimezone().isoformat(),
-                }
-            )
+            if job.get("stop_requested") or app.state.shutting_down.is_set():
+                job.update(
+                    {
+                        "status": "cancelled",
+                        "message": "Download cancelled",
+                        "error": "",
+                        "updated_at": datetime.now().astimezone().isoformat(),
+                    }
+                )
+            else:
+                job.update(
+                    {
+                        "status": "failed",
+                        "message": "Download failed",
+                        "error": str(exc) or type(exc).__name__,
+                        "updated_at": datetime.now().astimezone().isoformat(),
+                    }
+                )
+        finally:
+            if client is not None:
+                client.close()
+            with app.state.model_download_lock:
+                app.state.model_download_clients.pop(job_id, None)
+                app.state.model_download_futures.pop(job_id, None)
 
     @app.exception_handler(KeyError)
     async def not_found(_request: Request, exc: KeyError) -> JSONResponse:
@@ -832,11 +1013,12 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             "workspace_name": payload.workspace_name,
             "workspace_subtitle": payload.workspace_subtitle,
             "logo_data_url": payload.logo_data_url,
-            "theme": payload.theme,
         }
         repo = repository()
         try:
             previous = repo.app_settings()
+            if "theme" not in previous:
+                values["theme"] = payload.theme
             endpoint_changed = previous.get("model_endpoint", "") != payload.model_endpoint
             provider_changed = previous.get("model_provider", "ollama") != payload.model_provider
             if payload.clear_api_key or ((endpoint_changed or provider_changed) and not payload.api_key):
@@ -873,7 +1055,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     def update_theme(payload: ThemeUpdate) -> dict[str, Any]:
         repo = repository()
         try:
-            repo.update_app_settings({"theme": payload.theme})
+            repo.update_theme_setting(payload.theme, payload.version)
             return _settings_payload(repo)
         finally:
             repo.engine.dispose()
@@ -996,6 +1178,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         finally:
             repo.engine.dispose()
         endpoint = str(current["model_endpoint"]).rstrip("/")
+        model_name = str(current["model_name"])
         if current["model_provider"] == "ollama":
             url = f"{endpoint}/api/tags"
             headers: dict[str, str] = {}
@@ -1007,8 +1190,66 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         try:
             response = httpx.get(url, headers=headers, timeout=8, follow_redirects=True)
             response.raise_for_status()
+            inventory = response.json()
         except httpx.HTTPError as exc:
             raise ValueError(f"Model endpoint could not be reached: {exc}") from exc
+        except ValueError as exc:
+            raise ValueError("Model endpoint returned an invalid inventory response") from exc
+        if current["model_provider"] == "ollama":
+            models = inventory.get("models", []) if isinstance(inventory, dict) else []
+            installed = {
+                str(item.get("name") or item.get("model"))
+                for item in models
+                if isinstance(item, dict) and (item.get("name") or item.get("model"))
+            }
+            aliases = {model_name, f"{model_name}:latest" if ":" not in model_name else model_name}
+            if not installed.intersection(aliases):
+                raise ValueError(f"The selected model '{model_name}' is not installed")
+            generation_url = f"{endpoint}/api/generate"
+            generation_payload = {"model": model_name, "prompt": "Reply with OK.", "stream": False}
+        else:
+            models = inventory.get("data", []) if isinstance(inventory, dict) else []
+            installed = {
+                str(item.get("id"))
+                for item in models
+                if isinstance(item, dict) and item.get("id")
+            }
+            if model_name not in installed:
+                raise ValueError(f"The selected model '{model_name}' is not available")
+            generation_url = f"{endpoint}/chat/completions"
+            generation_payload = {
+                "model": model_name,
+                "messages": [{"role": "user", "content": "Reply with OK."}],
+                "max_tokens": 8,
+            }
+        try:
+            generated = httpx.post(
+                generation_url,
+                headers=headers,
+                json=generation_payload,
+                timeout=20,
+                follow_redirects=True,
+            )
+            generated.raise_for_status()
+            generated_payload = generated.json()
+        except httpx.HTTPError as exc:
+            raise ValueError(f"The selected model could not generate a response: {exc}") from exc
+        except ValueError as exc:
+            raise ValueError("The selected model returned an invalid generation response") from exc
+        if current["model_provider"] == "ollama":
+            usable = bool(
+                isinstance(generated_payload, dict)
+                and str(generated_payload.get("response") or "").strip()
+            )
+        else:
+            choices = generated_payload.get("choices", []) if isinstance(generated_payload, dict) else []
+            usable = bool(
+                choices
+                and isinstance(choices[0], dict)
+                and str((choices[0].get("message") or {}).get("content") or "").strip()
+            )
+        if not usable:
+            raise ValueError("The selected model returned an empty generation response")
         return {"status": "ok", "provider": current["model_provider"], "model": current["default_model"]}
 
     @app.post("/api/v1/settings/test-email")
@@ -1050,34 +1291,64 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             "models": ollama_catalog(q),
         }
 
+    @app.patch("/api/v1/settings/ollama/model")
+    def select_ollama_model(payload: OllamaModelRequest) -> dict[str, Any]:
+        endpoint, _selected = ollama_runtime()
+        installed = {
+            str(item.get("name") or item.get("model"))
+            for item in ollama_models(endpoint)
+            if item.get("name") or item.get("model")
+        }
+        aliases = {payload.model, f"{payload.model}:latest" if ":" not in payload.model else payload.model}
+        if not installed.intersection(aliases):
+            raise ValueError("Download this model before selecting it")
+        repo = repository()
+        try:
+            repo.update_app_settings({"model_name": payload.model})
+            return _settings_payload(repo)
+        finally:
+            repo.engine.dispose()
+
     @app.post("/api/v1/settings/ollama/pull", status_code=202)
     def start_ollama_pull(payload: OllamaModelRequest) -> dict[str, Any]:
         endpoint, _selected = ollama_runtime()
-        active = next(
-            (
-                job
-                for job in app.state.model_downloads.values()
-                if job["model"] == payload.model and job["status"] in {"queued", "downloading"}
-            ),
-            None,
-        )
-        if active:
-            return active
-        job_id = uuid.uuid4().hex
-        job = {
-            "id": job_id,
-            "model": payload.model,
-            "status": "queued",
-            "message": "Waiting to download",
-            "completed": 0,
-            "total": 0,
-            "percent": 0,
-            "error": "",
-            "updated_at": datetime.now().astimezone().isoformat(),
-        }
-        app.state.model_downloads[job_id] = job
-        app.state.executor.submit(pull_ollama_model, job_id, endpoint, payload.model)
-        return job
+        with app.state.model_download_lock:
+            if app.state.shutting_down.is_set():
+                raise ValueError("The application is shutting down")
+            active = next(
+                (
+                    job
+                    for job in app.state.model_downloads.values()
+                    if job["model"] == payload.model
+                    and job["status"] in {"queued", "downloading"}
+                ),
+                None,
+            )
+            if active:
+                return active
+            job_id = uuid.uuid4().hex
+            job = {
+                "id": job_id,
+                "model": payload.model,
+                "status": "queued",
+                "message": "Waiting to download",
+                "completed": 0,
+                "total": 0,
+                "percent": 0,
+                "error": "",
+                "stop_requested": False,
+                "updated_at": datetime.now().astimezone().isoformat(),
+            }
+            app.state.model_downloads[job_id] = job
+            try:
+                future = app.state.model_executor.submit(
+                    pull_ollama_model, job_id, endpoint, payload.model
+                )
+            except RuntimeError:
+                app.state.model_downloads.pop(job_id, None)
+                raise ValueError("The application is shutting down") from None
+            app.state.model_download_futures[job_id] = future
+            return job
 
     @app.get("/api/v1/settings/ollama/pulls/{job_id}")
     def ollama_pull_status(job_id: str) -> dict[str, Any]:
@@ -1086,27 +1357,54 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             raise KeyError(f"Model download {job_id} was not found")
         return job
 
+    @app.post("/api/v1/settings/ollama/pulls/{job_id}/cancel")
+    def cancel_ollama_pull(job_id: str) -> dict[str, Any]:
+        client: httpx.Client | None = None
+        with app.state.model_download_lock:
+            job = app.state.model_downloads.get(job_id)
+            if not job:
+                raise KeyError(f"Model download {job_id} was not found")
+            if job["status"] not in {"queued", "downloading"}:
+                raise ValueError(f"Cannot cancel a model download in {job['status']} state")
+            job["stop_requested"] = True
+            future = app.state.model_download_futures.get(job_id)
+            if future is not None and future.cancel():
+                app.state.model_download_futures.pop(job_id, None)
+                job.update(
+                    {
+                        "status": "cancelled",
+                        "message": "Download cancelled",
+                        "updated_at": datetime.now().astimezone().isoformat(),
+                    }
+                )
+            else:
+                job["message"] = "Cancelling download"
+                client = app.state.model_download_clients.get(job_id)
+        if client is not None:
+            client.close()
+        return job
+
     @app.post("/api/v1/settings/ollama/benchmark")
     def benchmark_ollama_model(payload: OllamaModelRequest) -> dict[str, Any]:
         endpoint, _selected = ollama_runtime()
         installed = {str(item.get("name") or item.get("model")) for item in ollama_models(endpoint)}
         if payload.model not in installed and f"{payload.model}:latest" not in installed:
             raise ValueError("Download this model before testing it")
-        schema = {
-            "type": "object",
-            "properties": {
-                "business_name": {"type": "string"},
-                "generic_email": {"type": "string"},
-                "phone": {"type": "string"},
-                "city_or_area": {"type": "string"},
-                "services": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["business_name", "generic_email", "phone", "city_or_area", "services"],
+        schema = LeadExtraction.model_json_schema()
+        benchmark_required = {
+            "business_name",
+            "generic_email",
+            "phone",
+            "city_or_area",
+            "services",
         }
         prompt = (
-            "Extract business lead data from the website excerpt. Return only the requested structured data.\n\n"
-            "Bright Smile Dental Clinic provides dental implants and dental hygiene appointments in London. "
-            "Contact our team at hello@brightsmile.example or call 020 7946 0123."
+            "Extract business lead data from this website HTML. Return only the requested structured "
+            "data and leave fields blank when the page does not provide evidence.\n\n"
+            "<html><head><title>Bright Smile Dental Clinic</title></head><body>"
+            "<main><h1>Bright Smile Dental Clinic</h1><p>Dental implants and dental hygiene "
+            "appointments in London.</p><a href='mailto:hello@brightsmile.example'>Email our team</a>"
+            "<a href='tel:02079460123'>020 7946 0123</a></main></body></html>"
         )
         started = time.perf_counter()
         try:
@@ -1124,7 +1422,10 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             )
             response.raise_for_status()
             result = response.json()
-            extracted = json.loads(result.get("response", ""))
+            if not isinstance(result, dict):
+                raise ValueError("Ollama returned a non-object response")
+            raw_extracted = json.loads(result.get("response", ""))
+            extracted = LeadExtraction.model_validate(raw_extracted).model_dump()
         except (httpx.HTTPError, json.JSONDecodeError, TypeError, ValueError) as exc:
             raise ValueError(f"The model could not complete the extraction benchmark: {exc}") from exc
         duration = round(time.perf_counter() - started, 2)
@@ -1133,7 +1434,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         checks = [
             {
                 "label": "Valid structured output",
-                "passed": all(key in extracted for key in schema["required"]),
+                "passed": all(key in raw_extracted for key in benchmark_required),
                 "points": 2,
             },
             {
@@ -1636,6 +1937,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         repo = repository()
         try:
             config = repo.load_config(run_id)
+            app.state.model_validator(config)
             repo.begin_run(run_id)
         finally:
             repo.engine.dispose()
@@ -1696,6 +1998,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             counts = status["counts"]
             actionable = counts.get("queued", 0) + counts.get("failed", 0) + counts.get("processing", 0)
             if actionable:
+                app.state.model_validator(config)
                 recovered = repo.recover_for_resume(run_id)
                 kind = "enrichment"
             else:
@@ -1734,6 +2037,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
                 raise ValueError(f"Run is already {status['status']}")
             if not status["counts"].get("failed") and not status["counts"].get("processing"):
                 raise ValueError("This run has no failed or interrupted candidates to retry")
+            app.state.model_validator(config)
             recovered = repo.recover_for_resume(run_id)
         finally:
             repo.engine.dispose()

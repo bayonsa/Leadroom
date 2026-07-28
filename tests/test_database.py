@@ -466,6 +466,17 @@ class DatabaseTests(unittest.TestCase):
         self.assertEqual(settings["workspace_name"], "Northstar")
         self.assertEqual(settings["blocked_domains"], '["example-directory.com"]')
 
+    def test_stale_settings_repair_never_overwrites_a_newer_user_change(self):
+        self.repository.update_app_settings({"theme": "invalid"})
+        self.repository.update_app_settings({"theme": "trustblue"})
+
+        self.repository.repair_app_settings(
+            {"theme": "invalid"},
+            {"theme": "brushstroke"},
+        )
+
+        self.assertEqual(self.repository.app_settings()["theme"], "trustblue")
+
     def test_discovery_summary_is_persisted_with_run(self):
         run_id = self.repository.create_run(self.config)
         self.repository.add_candidates(

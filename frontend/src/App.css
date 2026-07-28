@@ -896,7 +896,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
 .manual-model-download .model-download { padding-top: 6px; grid-template-columns: minmax(0, 1fr) auto; border-bottom: 0; }
 .download-progress { padding: 14px 20px; border-bottom: 1px solid var(--line); background: #f3f7f4; }
 .download-progress > div:first-child { display: flex; justify-content: space-between; gap: 12px; }
-.download-progress > div:first-child > span { min-width: 0; display: grid; gap: 2px; }
+.download-progress > div:first-child > span:first-child { min-width: 0; display: grid; gap: 2px; }
+.download-status-actions { display: flex; align-items: center; gap: 8px; }
+.download-status-actions .icon-button { width: 36px; min-width: 36px; height: 36px; }
 .download-progress strong { font-size: var(--type-caption); }
 .download-progress small { color: var(--muted); font-size: var(--type-caption); overflow-wrap: anywhere; }
 .download-progress em { color: var(--green-dark); font-size: var(--type-caption); font-style: normal; font-weight: var(--weight-bold); }

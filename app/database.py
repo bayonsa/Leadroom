@@ -55,6 +55,7 @@ CANDIDATE_TRANSITIONS = {
     "cancelled": {"queued"},
 }
 _REPOSITORY_IMPORT_LOCK = threading.RLock()
+_APP_SETTINGS_LOCK = threading.RLock()
 
 
 @contextmanager
@@ -616,24 +617,66 @@ class RunRepository:
     def app_settings(self) -> dict[str, str]:
         with self.sessions() as session:
             rows = session.query(AppSettingRecord).all()
-            return {
-                row.key: reveal_secret(row.value) if row.key in SECRET_SETTING_KEYS else row.value
-                for row in rows
-            }
+            settings: dict[str, str] = {}
+            for row in rows:
+                if row.key not in SECRET_SETTING_KEYS:
+                    settings[row.key] = row.value
+                    continue
+                try:
+                    settings[row.key] = reveal_secret(row.value)
+                except (OSError, RuntimeError, ValueError):
+                    settings[row.key] = ""
+                    settings[f"{row.key}_unreadable"] = "true"
+            return settings
 
     def update_app_settings(self, values: dict[str, str]) -> dict[str, str]:
         now = _now()
-        with self.sessions.begin() as session:
-            for key, value in values.items():
-                if key in SECRET_SETTING_KEYS:
-                    value = protect_secret(value)
+        with _APP_SETTINGS_LOCK, self.sessions.begin() as session:
+            self._write_app_settings(session, values, now)
+        return self.app_settings()
+
+    def repair_app_settings(
+        self,
+        expected: dict[str, str | None],
+        replacements: dict[str, str],
+    ) -> None:
+        now = _now()
+        with _APP_SETTINGS_LOCK, self.sessions.begin() as session:
+            for key, value in replacements.items():
                 row = session.get(AppSettingRecord, key)
+                previous = expected.get(key)
                 if row is None:
-                    session.add(AppSettingRecord(key=key, value=value, updated_at=now))
-                else:
+                    if previous is None:
+                        session.add(AppSettingRecord(key=key, value=value, updated_at=now))
+                elif row.value == previous:
                     row.value = value
                     row.updated_at = now
-        return self.app_settings()
+
+    def update_theme_setting(self, theme: str, version: int) -> bool:
+        now = _now()
+        with _APP_SETTINGS_LOCK, self.sessions.begin() as session:
+            version_row = session.get(AppSettingRecord, "theme_version")
+            current_version = int(version_row.value) if version_row and version_row.value.isdigit() else 0
+            if version < current_version:
+                return False
+            self._write_app_settings(
+                session,
+                {"theme": theme, "theme_version": str(version)},
+                now,
+            )
+            return True
+
+    @staticmethod
+    def _write_app_settings(session, values: dict[str, str], now: datetime) -> None:
+        for key, value in values.items():
+            if key in SECRET_SETTING_KEYS:
+                value = protect_secret(value)
+            row = session.get(AppSettingRecord, key)
+            if row is None:
+                session.add(AppSettingRecord(key=key, value=value, updated_at=now))
+            else:
+                row.value = value
+                row.updated_at = now
 
     def find_cached_lead(self, domain: str, exclude_run_id: str = "") -> dict[str, Any] | None:
         with self.sessions() as session:

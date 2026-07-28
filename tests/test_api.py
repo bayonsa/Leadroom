@@ -33,10 +33,12 @@ class ApiTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.database_path = Path(self.temp_dir.name) / "api.db"
         self.app = create_app(self.database_path)
+        self.app.state.model_validator = lambda _config: None
         self.client = TestClient(self.app)
 
     def tearDown(self):
         self.client.close()
+        self.app.state.model_executor.shutdown(wait=True, cancel_futures=True)
         self.app.state.executor.shutdown(wait=True, cancel_futures=True)
         self.temp_dir.cleanup()
 
@@ -93,6 +95,7 @@ class ApiTests(unittest.TestCase):
         static_app = create_app(self.database_path, frontend_dir=frontend)
         with TestClient(static_app) as client:
             response = client.get("/runs/example-run")
+        static_app.state.model_executor.shutdown(wait=True, cancel_futures=True)
         static_app.state.executor.shutdown(wait=True, cancel_futures=True)
 
         self.assertEqual(response.status_code, 200)
@@ -181,10 +184,15 @@ class ApiTests(unittest.TestCase):
                 self.assertEqual(bootstrap.status_code, 303)
                 self.assertNotIn("launch_token", bootstrap.headers["location"])
                 self.assertEqual(client.get("/api/v1/runs").status_code, 200)
+            secured_app.state.model_executor.shutdown(wait=True, cancel_futures=True)
             secured_app.state.executor.shutdown(wait=True, cancel_futures=True)
 
     def test_editable_settings_persist_brand_model_secret_and_filters(self):
-        logo = "data:image/png;base64,iVBORw0KGgo="
+        logo = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YA"
+            "AAAASUVORK5CYII="
+        )
         response = self.client.put(
             "/api/v1/settings",
             json={
@@ -222,6 +230,17 @@ class ApiTests(unittest.TestCase):
             self.client.patch("/api/v1/settings/theme", json={"theme": "unknown"}).status_code,
             422,
         )
+
+        newest = self.client.patch(
+            "/api/v1/settings/theme",
+            json={"theme": "trustblue", "version": 200},
+        )
+        stale = self.client.patch(
+            "/api/v1/settings/theme",
+            json={"theme": "rawblock", "version": 100},
+        )
+        self.assertEqual(newest.json()["theme"], "trustblue")
+        self.assertEqual(stale.json()["theme"], "trustblue")
 
         repo = RunRepository(self.database_path)
         try:
@@ -359,6 +378,12 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
 
+        payload["blocked_domains"] = []
+        payload["logo_data_url"] = "data:image/png;base64,bm90LWEtcG5n"
+        invalid_bytes = self.client.put("/api/v1/settings", json=payload)
+        self.assertEqual(invalid_bytes.status_code, 422)
+        self.assertIn("valid image", invalid_bytes.json()["cause"])
+
     def test_settings_reject_remote_plaintext_model_endpoint(self):
         response = self.client.put(
             "/api/v1/settings",
@@ -377,9 +402,72 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("HTTPS", response.json()["cause"])
 
+    def test_stored_settings_are_repaired_instead_of_breaking_the_workspace(self):
+        repo = RunRepository(self.database_path)
+        repo.update_app_settings(
+            {
+                "model_provider": "broken",
+                "model_name": " ",
+                "model_endpoint": "javascript:bad",
+                "blocked_domains": '["Good.Example", 42, "bad/path"]',
+                "workspace_name": "",
+                "workspace_subtitle": "",
+                "theme": "missing-theme",
+                "smtp_port": "not-a-number",
+                "smtp_security": "broken",
+                "email_accounts": '[{"id":"bad","port":"oops"}]',
+            }
+        )
+        repo.engine.dispose()
+
+        response = self.client.get("/api/v1/settings")
+
+        self.assertEqual(response.status_code, 200)
+        settings = response.json()
+        self.assertEqual(settings["model_provider"], "ollama")
+        self.assertEqual(settings["model_name"], "llama3.2:3b")
+        self.assertEqual(settings["model_endpoint"], "http://localhost:11434")
+        self.assertEqual(settings["blocked_domains"], ["good.example"])
+        self.assertEqual(settings["workspace_name"], "Leadroom")
+        self.assertEqual(settings["theme"], "brushstroke")
+        self.assertEqual(settings["smtp_port"], 587)
+        self.assertEqual(settings["smtp_security"], "starttls")
+        self.assertEqual(settings["email_accounts"], [])
+
+        repo = RunRepository(self.database_path)
+        persisted = repo.app_settings()
+        repo.engine.dispose()
+        self.assertEqual(persisted["model_provider"], "ollama")
+        self.assertEqual(persisted["smtp_port"], "587")
+        self.assertEqual(persisted["blocked_domains"], '["good.example"]')
+
+    def test_unreadable_secret_does_not_disable_non_secret_settings(self):
+        repo = RunRepository(self.database_path)
+        repo.update_app_settings(
+            {
+                "workspace_name": "Still available",
+                "llm_api_key": "encrypted-value",
+            }
+        )
+        repo.engine.dispose()
+
+        with patch("app.database.reveal_secret", side_effect=ValueError("wrong Windows user")):
+            response = self.client.get("/api/v1/settings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["workspace_name"], "Still available")
+        self.assertFalse(response.json()["api_key_configured"])
+        self.assertEqual(response.json()["secret_errors"], ["llm_api_key"])
+
+    @patch("app.api.httpx.post")
     @patch("app.api.httpx.get")
-    def test_model_connection_uses_saved_compatible_endpoint_without_exposing_key(self, get):
+    def test_model_connection_uses_saved_compatible_endpoint_without_exposing_key(self, get, post):
         get.return_value.raise_for_status.return_value = None
+        get.return_value.json.return_value = {"data": [{"id": "paid-model"}]}
+        post.return_value.raise_for_status.return_value = None
+        post.return_value.json.return_value = {
+            "choices": [{"message": {"content": "OK"}}]
+        }
         payload = {
             "model_provider": "openai_compatible",
             "model_name": "paid-model",
@@ -402,6 +490,55 @@ class ApiTests(unittest.TestCase):
             timeout=8,
             follow_redirects=True,
         )
+        post.assert_called_once_with(
+            "https://models.example/v1/chat/completions",
+            headers={"Authorization": "Bearer secret-key"},
+            json={
+                "model": "paid-model",
+                "messages": [{"role": "user", "content": "Reply with OK."}],
+                "max_tokens": 8,
+            },
+            timeout=20,
+            follow_redirects=True,
+        )
+
+    @patch("app.api.httpx.post")
+    @patch("app.api.httpx.get")
+    def test_model_connection_rejects_missing_model(self, get, post):
+        repo = RunRepository(self.database_path)
+        repo.update_app_settings(
+            {
+                "model_provider": "ollama",
+                "model_name": "missing:3b",
+                "model_endpoint": "http://localhost:11434",
+            }
+        )
+        repo.engine.dispose()
+        get.return_value.raise_for_status.return_value = None
+        get.return_value.json.return_value = {"models": [{"name": "installed:3b"}]}
+
+        missing = self.client.post("/api/v1/settings/test-model")
+
+        self.assertEqual(missing.status_code, 409)
+        self.assertIn("not installed", missing.json()["cause"])
+        post.assert_not_called()
+
+    @patch("app.api.search_business_sites", return_value=[SITE])
+    def test_enrichment_never_starts_with_a_missing_local_model(self, _search):
+        created = self.client.post(
+            "/api/v1/runs",
+            json={"niche": "salons", "location": "London", "delay_seconds": 0},
+        ).json()
+        run_id = created["run"]["id"]
+        self.wait_for_run(run_id, {"ready"})
+        self.app.state.model_validator = MagicMock(
+            side_effect=ValueError("The selected Ollama model is not installed")
+        )
+
+        response = self.client.post(f"/api/v1/runs/{run_id}/start")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.client.get(f"/api/v1/runs/{run_id}").json()["run"]["status"], "ready")
 
     @patch("app.api.httpx.get")
     def test_ollama_model_inventory_returns_installed_details(self, get):
@@ -422,6 +559,32 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["models"][0]["name"], "qwen2.5:7b")
         self.assertEqual(response.json()["models"][0]["details"]["parameter_size"], "7.6B")
+
+    @patch("app.api.httpx.get")
+    def test_selecting_ollama_model_changes_only_the_model_setting(self, get):
+        repo = RunRepository(self.database_path)
+        repo.update_app_settings(
+            {
+                "model_provider": "ollama",
+                "model_name": "llama3.2:3b",
+                "model_endpoint": "http://localhost:11434",
+                "workspace_name": "Unsaved-safe workspace",
+                "theme": "ember",
+            }
+        )
+        repo.engine.dispose()
+        get.return_value.raise_for_status.return_value = None
+        get.return_value.json.return_value = {"models": [{"name": "qwen2.5:7b"}]}
+
+        response = self.client.patch(
+            "/api/v1/settings/ollama/model",
+            json={"model": "qwen2.5:7b"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["model_name"], "qwen2.5:7b")
+        self.assertEqual(response.json()["workspace_name"], "Unsaved-safe workspace")
+        self.assertEqual(response.json()["theme"], "ember")
 
     @patch("app.api.httpx.get")
     def test_ollama_catalog_merges_official_models_with_local_inventory(self, get):
@@ -445,8 +608,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.json()["models"][0]["variants"], ["0.8b", "4b"])
         self.assertTrue(response.json()["models"][0]["local"])
 
-    @patch("app.api.httpx.stream")
-    def test_ollama_model_download_reports_streamed_progress(self, stream):
+    @patch("app.api.httpx.Client")
+    def test_ollama_model_download_reports_streamed_progress(self, client):
         fake = MagicMock()
         fake.raise_for_status.return_value = None
         fake.iter_lines.return_value = iter(
@@ -456,7 +619,7 @@ class ApiTests(unittest.TestCase):
                 '{"status":"success","total":100,"completed":100}',
             ]
         )
-        stream.return_value.__enter__.return_value = fake
+        client.return_value.stream.return_value.__enter__.return_value = fake
         started = self.client.post("/api/v1/settings/ollama/pull", json={"model": "qwen2.5:7b"})
         job_id = started.json()["id"]
 
@@ -468,7 +631,45 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(status["status"], "completed")
         self.assertEqual(status["percent"], 100)
-        stream.assert_called_once()
+        client.return_value.stream.assert_called_once()
+
+    def test_queued_model_download_can_be_cancelled_without_using_lead_workers(self):
+        future = MagicMock()
+        future.cancel.return_value = True
+        with patch.object(self.app.state.model_executor, "submit", return_value=future) as submit:
+            started = self.client.post(
+                "/api/v1/settings/ollama/pull",
+                json={"model": "qwen2.5:7b"},
+            ).json()
+
+        cancelled = self.client.post(
+            f"/api/v1/settings/ollama/pulls/{started['id']}/cancel"
+        )
+
+        self.assertEqual(cancelled.status_code, 200)
+        self.assertEqual(cancelled.json()["status"], "cancelled")
+        submit.assert_called_once()
+
+    def test_active_model_download_cancel_closes_the_streaming_client(self):
+        job_id = "active-download"
+        client = MagicMock()
+        future = MagicMock()
+        future.cancel.return_value = False
+        self.app.state.model_downloads[job_id] = {
+            "id": job_id,
+            "model": "qwen2.5:7b",
+            "status": "downloading",
+            "message": "Downloading",
+            "stop_requested": False,
+        }
+        self.app.state.model_download_futures[job_id] = future
+        self.app.state.model_download_clients[job_id] = client
+
+        response = self.client.post(f"/api/v1/settings/ollama/pulls/{job_id}/cancel")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["message"], "Cancelling download")
+        client.close.assert_called_once_with()
 
     @patch("app.api.httpx.post")
     @patch("app.api.httpx.get")

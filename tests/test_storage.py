@@ -8,7 +8,13 @@ from unittest.mock import patch
 
 import pytest
 
-from app.storage import apply_pending_storage, load_storage_config, schedule_storage_change
+from app.database import RunRepository
+from app.storage import (
+    StorageConfigurationError,
+    apply_pending_storage,
+    load_storage_config,
+    schedule_storage_change,
+)
 
 
 def _database(path: Path, value: str) -> None:
@@ -55,7 +61,9 @@ def test_use_existing_database_never_overwrites_it(tmp_path: Path) -> None:
     target = tmp_path / "existing"
     config_path = bootstrap / "storage.json"
     _database(source / "lead_scraper.db", "old")
-    _database(target / "lead_scraper.db", "selected")
+    selected = RunRepository(target / "lead_scraper.db")
+    selected.update_app_settings({"workspace_name": "Selected workspace"})
+    selected.engine.dispose()
 
     with patch("app.storage._set_ollama_models_environment"):
         schedule_storage_change(
@@ -69,8 +77,9 @@ def test_use_existing_database_never_overwrites_it(tmp_path: Path) -> None:
         )
     apply_pending_storage(config_path, bootstrap)
 
-    with sqlite3.connect(target / "lead_scraper.db") as connection:
-        assert connection.execute("SELECT value FROM marker").fetchone() == ("selected",)
+    selected = RunRepository(target / "lead_scraper.db")
+    assert selected.app_settings()["workspace_name"] == "Selected workspace"
+    selected.engine.dispose()
     assert (source / "lead_scraper.db").exists()
 
 
@@ -92,16 +101,14 @@ def test_move_refuses_to_replace_existing_database(tmp_path: Path) -> None:
         )
 
 
-def test_storage_config_falls_back_when_locator_is_invalid(tmp_path: Path) -> None:
+def test_storage_config_never_silently_falls_back_when_locator_is_invalid(tmp_path: Path) -> None:
     bootstrap = tmp_path / "bootstrap"
     config_path = bootstrap / "storage.json"
     bootstrap.mkdir()
     config_path.write_text("not-json", encoding="utf-8")
 
-    config = load_storage_config(config_path, bootstrap)
-
-    assert config["data_root"] == str(bootstrap)
-    assert config["cache_dir"] == str(bootstrap / "cache")
+    with pytest.raises(StorageConfigurationError, match="locating your existing workspace"):
+        load_storage_config(config_path, bootstrap)
 
 
 def test_relative_storage_paths_are_rejected(tmp_path: Path) -> None:
@@ -115,3 +122,104 @@ def test_relative_storage_paths_are_rejected(tmp_path: Path) -> None:
             "move",
             False,
         )
+
+
+def test_workspace_migration_recovers_after_export_copy_failure(tmp_path: Path) -> None:
+    bootstrap = tmp_path / "bootstrap"
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    config_path = bootstrap / "storage.json"
+    _database(source / "lead_scraper.db", "recoverable")
+    (source / "exports").mkdir(parents=True)
+    (source / "exports" / "leads.csv").write_text("business,email\n", encoding="utf-8")
+    with patch("app.storage._set_ollama_models_environment"):
+        schedule_storage_change(
+            config_path,
+            bootstrap,
+            source,
+            str(target),
+            str(tmp_path / "downloads"),
+            "move",
+            False,
+        )
+
+    with (
+        patch("app.storage._copy_directory", side_effect=OSError("disk interrupted")),
+        pytest.raises(OSError, match="disk interrupted"),
+    ):
+        apply_pending_storage(config_path, bootstrap)
+
+    assert (source / "lead_scraper.db").exists()
+    assert (source / "exports" / "leads.csv").exists()
+    assert not (target / "lead_scraper.db").exists()
+    (target / ".leadroom-workspace-migration" / "lead_scraper.db").write_bytes(b"interrupted")
+
+    apply_pending_storage(config_path, bootstrap)
+    with sqlite3.connect(target / "lead_scraper.db") as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone() == ("recoverable",)
+    assert (target / "exports" / "leads.csv").exists()
+    assert not (source / "lead_scraper.db").exists()
+
+
+def test_nested_workspace_destination_is_rejected(tmp_path: Path) -> None:
+    source = tmp_path / "workspace"
+    source.mkdir()
+
+    with patch("app.storage._set_ollama_models_environment"), pytest.raises(
+        ValueError, match="cannot contain"
+    ):
+        schedule_storage_change(
+            tmp_path / "bootstrap" / "storage.json",
+            tmp_path / "bootstrap",
+            source,
+            str(source / "nested"),
+            str(tmp_path / "downloads"),
+            "move",
+            False,
+        )
+
+
+def test_use_existing_rejects_corrupt_or_unrelated_database(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "lead_scraper.db").write_bytes(b"not sqlite")
+
+    with patch("app.storage._set_ollama_models_environment"), pytest.raises(
+        ValueError, match="valid SQLite"
+    ):
+        schedule_storage_change(
+            tmp_path / "bootstrap" / "storage.json",
+            tmp_path / "bootstrap",
+            tmp_path / "source",
+            str(target),
+            str(tmp_path / "downloads"),
+            "use",
+            False,
+        )
+
+
+def test_migration_never_adopts_a_database_that_appears_after_scheduling(tmp_path: Path) -> None:
+    bootstrap = tmp_path / "bootstrap"
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    config_path = bootstrap / "storage.json"
+    _database(source / "lead_scraper.db", "source")
+    with patch("app.storage._set_ollama_models_environment"):
+        schedule_storage_change(
+            config_path,
+            bootstrap,
+            source,
+            str(target),
+            str(tmp_path / "downloads"),
+            "move",
+            False,
+        )
+    _database(target / "lead_scraper.db", "unrelated")
+
+    with pytest.raises(FileExistsError, match="unrelated database"):
+        apply_pending_storage(config_path, bootstrap)
+
+    with sqlite3.connect(source / "lead_scraper.db") as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone() == ("source",)
+    with sqlite3.connect(target / "lead_scraper.db") as connection:
+        assert connection.execute("SELECT value FROM marker").fetchone() == ("unrelated",)

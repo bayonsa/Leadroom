@@ -287,7 +287,7 @@ export interface OllamaCatalogResponse {
 export interface OllamaPullJob {
   id: string
   model: string
-  status: 'queued' | 'downloading' | 'completed' | 'failed'
+  status: 'queued' | 'downloading' | 'completed' | 'failed' | 'cancelled'
   message: string
   completed: number
   total: number

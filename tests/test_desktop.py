@@ -24,6 +24,7 @@ def test_desktop_server_does_not_configure_console_logging(monkeypatch, tmp_path
     assert run.call_args.kwargs["log_config"] is None
     assert run.call_args.kwargs["access_log"] is False
     assert Path(run_desktop.os.environ["PLAYWRIGHT_BROWSERS_PATH"]) == tmp_path / "ms-playwright"
+    app.state.model_executor.shutdown(wait=True)
     app.state.executor.shutdown(wait=True)
 
 
