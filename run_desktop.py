@@ -70,6 +70,75 @@ def _activate_existing_instance(path: Path, timeout: float = 10) -> bool:
     return False
 
 
+def _active_worker_threads() -> list[threading.Thread]:
+    prefixes = ("lead-worker", "model-download", "leadroom-api", "local-discovery")
+    return [
+        thread
+        for thread in threading.enumerate()
+        if thread.is_alive() and thread.name.startswith(prefixes)
+    ]
+
+
+def _hard_exit(code: int) -> None:
+    os._exit(code)
+
+
+def _stop_server(
+    server,
+    server_thread: threading.Thread,
+    worker_timeout: float = 5,
+) -> None:
+    server.should_exit = True
+    server_thread.join(timeout=10)
+    if server_thread.is_alive():
+        server.force_exit = True
+        server_thread.join(timeout=3)
+    if server_thread.is_alive():
+        logging.getLogger(__name__).error("Leadroom API thread did not stop cleanly")
+    deadline = time.monotonic() + worker_timeout
+    while _active_worker_threads() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    remaining = _active_worker_threads()
+    if remaining:
+        names = ", ".join(thread.name for thread in remaining)
+        logging.getLogger(__name__).error(
+            "Forcing desktop exit because workers did not stop: %s",
+            names,
+        )
+        _hard_exit(0)
+
+
+def _show_startup_error(title: str, message: str) -> None:
+    logging.getLogger(__name__).error("%s: %s", title, message)
+    if os.name != "nt":
+        return
+    import ctypes
+
+    ctypes.windll.user32.MessageBoxW(None, message, title, 0x10)
+
+
+def _release_instance_handle(instance_handle) -> None:
+    try:
+        import msvcrt
+
+        instance_handle.seek(0)
+        msvcrt.locking(instance_handle.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    instance_handle.close()
+    if instance_handle in _INSTANCE_HANDLES:
+        _INSTANCE_HANDLES.remove(instance_handle)
+
+
+def _prepare_storage(storage_config_path: Path, bootstrap_root: Path) -> tuple[dict, Path]:
+    from app.storage import apply_pending_storage
+
+    storage = apply_pending_storage(storage_config_path, bootstrap_root)
+    data_root = Path(storage["data_root"])
+    (data_root / "exports").mkdir(parents=True, exist_ok=True)
+    return storage, data_root
+
+
 def _run_native_window(app, port: int, launch_token: str, icon_path: Path) -> None:
     import webview
 
@@ -93,8 +162,7 @@ def _run_native_window(app, port: int, launch_token: str, icon_path: Path) -> No
         except (OSError, URLError):
             time.sleep(0.2)
     else:
-        server.should_exit = True
-        server_thread.join(timeout=5)
+        _stop_server(server, server_thread)
         raise RuntimeError("Leadroom API did not become ready")
 
     window = webview.create_window(
@@ -123,8 +191,7 @@ def _run_native_window(app, port: int, launch_token: str, icon_path: Path) -> No
             icon=str(icon_path),
         )
     finally:
-        server.should_exit = True
-        server_thread.join(timeout=10)
+        _stop_server(server, server_thread)
 
 
 def main() -> None:
@@ -160,13 +227,17 @@ def main() -> None:
             encoding="utf-8",
         )],
     )
-    from app.storage import apply_pending_storage
-
     storage_config_path = bootstrap_root / "storage.json"
-    storage = apply_pending_storage(storage_config_path, bootstrap_root)
-    data_root = Path(storage["data_root"])
-    for child in ("exports",):
-        (data_root / child).mkdir(parents=True, exist_ok=True)
+    try:
+        storage, data_root = _prepare_storage(storage_config_path, bootstrap_root)
+    except (OSError, RuntimeError, ValueError) as exc:
+        _show_startup_error(
+            "Leadroom storage needs attention",
+            f"{exc}\n\nConfiguration file:\n{storage_config_path}\n\n"
+            "Leadroom did not create or replace your workspace.",
+        )
+        _release_instance_handle(instance_handle)
+        return
     os.environ["LEADROOM_BOOTSTRAP_ROOT"] = str(bootstrap_root)
     os.environ["LEADROOM_STORAGE_CONFIG"] = str(storage_config_path)
     os.environ["LEADROOM_DATA_ROOT"] = str(data_root)
@@ -213,15 +284,7 @@ def main() -> None:
                 instance_state.unlink(missing_ok=True)
         except (OSError, json.JSONDecodeError):
             pass
-        try:
-            import msvcrt
-            instance_handle.seek(0)
-            msvcrt.locking(instance_handle.fileno(), msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
-        instance_handle.close()
-        if instance_handle in _INSTANCE_HANDLES:
-            _INSTANCE_HANDLES.remove(instance_handle)
+        _release_instance_handle(instance_handle)
         if previous_launch_token is None:
             os.environ.pop("LEADROOM_LAUNCH_TOKEN", None)
         else:

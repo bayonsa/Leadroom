@@ -58,6 +58,34 @@ def test_inno_setup_defines_install_and_uninstall_workflows() -> None:
     assert "clean-install-state.ps1" in definition
     assert "CreateInputDirPage" in definition
     assert "Leadroom-Setup" in definition
+    assert "-ProcessPath" in definition
+    assert "IsProcessRunning(BootstrapProcessId)" in definition
+    assert "stopped unexpectedly" in definition
+
+
+def test_bootstrap_long_running_children_are_cancellable() -> None:
+    definition = (ROOT / "scripts" / "install-bootstrap.ps1").read_text(encoding="utf-8")
+    assert "[string]$ProcessPath" in definition
+    assert "Invoke-CancellableProcess $winget" in definition
+    assert "Stop-InstallerProcessTree $process" in definition
+    assert 'Invoke-CancellableProcess $powershell $setupArguments' in definition
+    assert 'Invoke-CancellableProcess $powershell $importArguments' in definition
+    assert "$reader.ReadLineAsync()" in definition
+    assert "while (-not $readTask.Wait(250))" in definition
+    assert "while (-not $reader.EndOfStream)" not in definition
+    assert "while (-not $sendTask.Wait(250))" in definition
+    assert "Stop-InstallerProcessTree $started" in definition
+    assert "Assert-Capacity $ubuntuStorage 30GB" in definition
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    ["setup-local-data.ps1", "import-osm.ps1", "setup-local-updates.ps1"],
+)
+def test_full_local_scripts_fail_fast_on_native_command_errors(script_name: str) -> None:
+    definition = (ROOT / "scripts" / script_name).read_text(encoding="utf-8")
+    assert "function Assert-NativeSuccess" in definition
+    assert definition.count("Assert-NativeSuccess") >= 3
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows cleanup script")

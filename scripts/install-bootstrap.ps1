@@ -19,7 +19,8 @@ param(
     [switch]$PlanOnly,
     [string]$StatusPath,
     [string]$CompletionPath,
-    [string]$CancelPath
+    [string]$CancelPath,
+    [string]$ProcessPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,14 @@ $logDirectory = Join-Path $bootstrapRoot "logs"
 $logPath = Join-Path $logDirectory "install.log"
 $modelDirectoryChanged = $false
 $previousModelDirectory = $null
+
+if (-not [string]::IsNullOrWhiteSpace($ProcessPath)) {
+    [IO.File]::WriteAllText(
+        $ProcessPath,
+        [string]$PID,
+        [Text.UTF8Encoding]::new($false)
+    )
+}
 
 function Write-InstallerStatus(
     [int]$Percent,
@@ -117,6 +126,19 @@ function Get-FreeBytes([string]$Path) {
     return ([IO.DriveInfo]::new($root)).AvailableFreeSpace
 }
 
+function Get-UbuntuStoragePath {
+    $distributions = Get-ChildItem `
+        -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss" `
+        -ErrorAction SilentlyContinue
+    foreach ($distribution in $distributions) {
+        $properties = Get-ItemProperty -LiteralPath $distribution.PSPath
+        if ($properties.DistributionName -eq "Ubuntu" -and $properties.BasePath) {
+            return [Environment]::ExpandEnvironmentVariables([string]$properties.BasePath)
+        }
+    }
+    return $null
+}
+
 function Assert-Capacity([string]$Path, [long]$RequiredBytes, [string]$Label) {
     $free = Get-FreeBytes $Path
     if ($free -lt $RequiredBytes) {
@@ -132,14 +154,51 @@ function Find-Winget {
     return $null
 }
 
+function Stop-InstallerProcessTree([Diagnostics.Process]$Process) {
+    if (-not $Process -or $Process.HasExited) { return }
+    & "$env:SystemRoot\System32\taskkill.exe" /PID $Process.Id /T /F 2>$null | Out-Null
+    $Process.WaitForExit(5000) | Out-Null
+}
+
+function Invoke-CancellableProcess(
+    [string]$FilePath,
+    [string]$ArgumentLine,
+    [string]$Label
+) {
+    Assert-InstallerNotCancelled
+    $process = Start-Process `
+        -FilePath $FilePath `
+        -ArgumentList $ArgumentLine `
+        -WindowStyle Hidden `
+        -PassThru
+    try {
+        while (-not $process.WaitForExit(250)) {
+            Assert-InstallerNotCancelled
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "$Label failed with exit code $($process.ExitCode)."
+        }
+    } catch [OperationCanceledException] {
+        Stop-InstallerProcessTree $process
+        throw
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Quote-ProcessArgument([string]$Value) {
+    return '"' + ($Value -replace '"', '\"') + '"'
+}
+
 function Install-WingetPackage([string]$Id, [string]$Name) {
     $winget = Find-Winget
     if (-not $winget) {
         throw "$Name is missing and Windows Package Manager (winget) is unavailable. Install App Installer and retry."
     }
     Write-InstallLog "Installing $Name with winget."
-    & $winget install --id $Id --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-    if ($LASTEXITCODE -ne 0) { throw "$Name installation failed with exit code $LASTEXITCODE." }
+    $arguments = "install --id $Id --exact --silent --accept-package-agreements " +
+        "--accept-source-agreements --disable-interactivity"
+    Invoke-CancellableProcess $winget $arguments "$Name installation"
 }
 
 function Invoke-OllamaModelPull([string]$Endpoint, [string]$ModelName) {
@@ -153,17 +212,30 @@ function Invoke-OllamaModelPull([string]$Endpoint, [string]$ModelName) {
             "$Endpoint/api/pull"
         )
         $request.Content = $content
-        $response = $client.SendAsync(
+        $sendTask = $client.SendAsync(
             $request,
             [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead
-        ).GetAwaiter().GetResult()
+        )
+        while (-not $sendTask.Wait(250)) {
+            Assert-InstallerNotCancelled
+        }
+        $response = $sendTask.GetAwaiter().GetResult()
         $response.EnsureSuccessStatusCode()
-        $stream = $response.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+        $streamTask = $response.Content.ReadAsStreamAsync()
+        while (-not $streamTask.Wait(250)) {
+            Assert-InstallerNotCancelled
+        }
+        $stream = $streamTask.GetAwaiter().GetResult()
         $reader = [IO.StreamReader]::new($stream)
         try {
-            while (-not $reader.EndOfStream) {
+            while ($true) {
                 Assert-InstallerNotCancelled
-                $line = $reader.ReadLine()
+                $readTask = $reader.ReadLineAsync()
+                while (-not $readTask.Wait(250)) {
+                    Assert-InstallerNotCancelled
+                }
+                $line = $readTask.GetAwaiter().GetResult()
+                if ($null -eq $line) { break }
                 if ([string]::IsNullOrWhiteSpace($line)) { continue }
                 $event = $line | ConvertFrom-Json
                 if ($event.error) { throw [InvalidOperationException]::new([string]$event.error) }
@@ -209,6 +281,7 @@ function Find-Ollama {
 }
 
 function Wait-Ollama([string]$Executable, [string]$Endpoint = "http://127.0.0.1:11434") {
+    $started = $null
     try {
         Invoke-RestMethod -Uri "$Endpoint/api/tags" -TimeoutSec 2 | Out-Null
         return $null
@@ -216,16 +289,21 @@ function Wait-Ollama([string]$Executable, [string]$Endpoint = "http://127.0.0.1:
         Write-InstallLog "Starting the local Ollama service."
         $started = Start-Process -FilePath $Executable -ArgumentList "serve" -WindowStyle Hidden -PassThru
     }
-    $deadline = (Get-Date).AddSeconds(45)
-    while ((Get-Date) -lt $deadline) {
-        Assert-InstallerNotCancelled
-        Start-Sleep -Milliseconds 750
-        try {
-            Invoke-RestMethod -Uri "$Endpoint/api/tags" -TimeoutSec 2 | Out-Null
-            return $started
-        } catch {}
+    try {
+        $deadline = (Get-Date).AddSeconds(45)
+        while ((Get-Date) -lt $deadline) {
+            Assert-InstallerNotCancelled
+            Start-Sleep -Milliseconds 750
+            try {
+                Invoke-RestMethod -Uri "$Endpoint/api/tags" -TimeoutSec 2 | Out-Null
+                return $started
+            } catch {}
+        }
+        throw "Ollama was installed but its local service did not become ready."
+    } catch {
+        Stop-InstallerProcessTree $started
+        throw
     }
-    throw "Ollama was installed but its local service did not become ready."
 }
 
 function Save-StorageLocator([string]$DataPath, [string]$DownloadsPath) {
@@ -357,16 +435,28 @@ if ($Mode -eq "FullLocal" -and $SetupLocalData) {
     if (-not $ubuntu) {
         throw "Full Local setup needs WSL2 with Ubuntu. Run 'wsl --install -d Ubuntu', restart Windows, then rerun the installer."
     }
+    $ubuntuStorage = Get-UbuntuStoragePath
+    if (-not $ubuntuStorage) {
+        throw "Setup could not locate Ubuntu's WSL storage folder to verify free disk space."
+    }
+    Assert-Capacity $ubuntuStorage 30GB "Ubuntu WSL storage drive"
     Write-InstallerStatus 10 "Building the local index" "Downloading and importing OpenStreetMap data; this can take a long time"
     Write-InstallLog "Installing the Full Local database engine."
-    & (Join-Path $HelperRoot "setup-local-data.ps1")
-    if ($LASTEXITCODE -ne 0) { throw "The Full Local database setup failed." }
-    & (Join-Path $HelperRoot "import-osm.ps1") `
-        -Region $OsmRegion `
-        -DataDirectory (Join-Path $DownloadsRoot "osm") `
-        -ResourceDirectory $ResourceRoot `
-        -UpdateScriptPath (Join-Path $HelperRoot "setup-local-updates.ps1")
-    if ($LASTEXITCODE -ne 0) { throw "The OpenStreetMap import failed." }
+    $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $setupScript = Join-Path $HelperRoot "setup-local-data.ps1"
+    $setupArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File " +
+        (Quote-ProcessArgument $setupScript)
+    Invoke-CancellableProcess $powershell $setupArguments "Full Local database setup"
+
+    $importScript = Join-Path $HelperRoot "import-osm.ps1"
+    $importArguments = "-NoLogo -NoProfile -ExecutionPolicy Bypass -File " +
+        (Quote-ProcessArgument $importScript) +
+        " -Region " + (Quote-ProcessArgument $OsmRegion) +
+        " -DataDirectory " + (Quote-ProcessArgument (Join-Path $DownloadsRoot "osm")) +
+        " -ResourceDirectory " + (Quote-ProcessArgument $ResourceRoot) +
+        " -UpdateScriptPath " +
+        (Quote-ProcessArgument (Join-Path $HelperRoot "setup-local-updates.ps1"))
+    Invoke-CancellableProcess $powershell $importArguments "OpenStreetMap import"
 }
 
 Write-InstallerStatus 95 "Saving workspace settings" "Recording the selected storage folders"

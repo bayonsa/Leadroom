@@ -100,6 +100,14 @@ function TranslateMessage(var Msg: TWindowsMessage): Boolean;
   external 'TranslateMessage@user32.dll stdcall';
 function DispatchMessage(var Msg: TWindowsMessage): Longint;
   external 'DispatchMessageW@user32.dll stdcall';
+function OpenProcess(DesiredAccess: LongWord; InheritHandle: Boolean;
+  ProcessId: LongWord): LongWord;
+  external 'OpenProcess@kernel32.dll stdcall';
+function GetExitCodeProcess(ProcessHandle: LongWord;
+  var ExitCode: LongWord): Boolean;
+  external 'GetExitCodeProcess@kernel32.dll stdcall';
+function CloseHandle(Handle: LongWord): Boolean;
+  external 'CloseHandle@kernel32.dll stdcall';
 
 var
   ModePage: TInputOptionWizardPage;
@@ -109,6 +117,7 @@ var
   BootstrapStatusPath: String;
   BootstrapCompletionPath: String;
   BootstrapCancelPath: String;
+  BootstrapProcessPath: String;
   BootstrapRunning: Boolean;
   BootstrapCancelRequested: Boolean;
   BootstrapCancelButton: TNewButton;
@@ -150,6 +159,21 @@ begin
   Result := Value;
   StringChangeEx(Result, '"', '""', True);
   Result := '"' + Result + '"';
+end;
+
+function IsProcessRunning(ProcessId: Integer): Boolean;
+var
+  ProcessHandle, ExitCode: LongWord;
+begin
+  Result := False;
+  ProcessHandle := OpenProcess($1000, False, ProcessId);
+  if ProcessHandle = 0 then Exit;
+  try
+    if GetExitCodeProcess(ProcessHandle, ExitCode) then
+      Result := ExitCode = 259;
+  finally
+    CloseHandle(ProcessHandle);
+  end;
 end;
 
 procedure ApplyModeSelection;
@@ -258,7 +282,8 @@ begin
     ' -Model ' + PowerShellQuote(ParamValue('MODEL', 'llama3.2:3b')) +
     ' -StatusPath ' + PowerShellQuote(BootstrapStatusPath) +
     ' -CompletionPath ' + PowerShellQuote(BootstrapCompletionPath) +
-    ' -CancelPath ' + PowerShellQuote(BootstrapCancelPath);
+    ' -CancelPath ' + PowerShellQuote(BootstrapCancelPath) +
+    ' -ProcessPath ' + PowerShellQuote(BootstrapProcessPath);
   if DependencyPage.Values[0] then Result := Result + ' -InstallWebView';
   if DependencyPage.Values[1] then Result := Result + ' -InstallOllama';
   if DependencyPage.Values[2] then Result := Result + ' -DownloadModel';
@@ -313,7 +338,9 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
   CompletionLines: TArrayOfString;
+  ProcessLines: TArrayOfString;
   FailureDetail: String;
+  BootstrapProcessId, ProcessWaitCycles, LivenessCycles: Integer;
 begin
   Result := '';
   ExtractTemporaryFiles('{tmp}\install-bootstrap.ps1');
@@ -328,9 +355,11 @@ begin
   BootstrapStatusPath := ExpandConstant('{tmp}\leadroom-bootstrap.status');
   BootstrapCompletionPath := ExpandConstant('{tmp}\leadroom-bootstrap.complete');
   BootstrapCancelPath := ExpandConstant('{tmp}\leadroom-bootstrap.cancel');
+  BootstrapProcessPath := ExpandConstant('{tmp}\leadroom-bootstrap.process');
   DeleteFile(BootstrapStatusPath);
   DeleteFile(BootstrapCompletionPath);
   DeleteFile(BootstrapCancelPath);
+  DeleteFile(BootstrapProcessPath);
   BootstrapCancelRequested := False;
   BootstrapProgress.SetText('Checking this computer',
     'Preparing the selected components');
@@ -343,9 +372,39 @@ begin
     if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
       BootstrapArguments, '', SW_HIDE, ewNoWait, ResultCode) then
       RaiseException('Windows could not start the Leadroom setup helper.');
+    BootstrapProcessId := 0;
+    ProcessWaitCycles := 0;
+    while (BootstrapProcessId = 0) and
+      (not FileExists(BootstrapCompletionPath)) do begin
+      PumpPendingMessages;
+      RefreshBootstrapProgress;
+      if LoadStringsFromFile(BootstrapProcessPath, ProcessLines) and
+        (GetArrayLength(ProcessLines) >= 1) then
+        BootstrapProcessId := StrToIntDef(Trim(ProcessLines[0]), 0);
+      ProcessWaitCycles := ProcessWaitCycles + 1;
+      if ProcessWaitCycles >= 200 then begin
+        SaveStringToFile(BootstrapCancelPath, 'cancel', False);
+        BootstrapCancelRequested := True;
+        Result := 'The Leadroom setup helper did not start correctly.' + #13#10 + #13#10 +
+          'Review ' + ExpandConstant('{localappdata}\Leadroom\logs\install.log') +
+          ' and run setup again.';
+        Exit;
+      end;
+      Sleep(50);
+    end;
+    LivenessCycles := 0;
     while not FileExists(BootstrapCompletionPath) do begin
       PumpPendingMessages;
       RefreshBootstrapProgress;
+      LivenessCycles := LivenessCycles + 1;
+      if (LivenessCycles >= 10) and
+        (not IsProcessRunning(BootstrapProcessId)) then begin
+        Result := 'The Leadroom setup helper stopped unexpectedly.' + #13#10 + #13#10 +
+          'Review ' + ExpandConstant('{localappdata}\Leadroom\logs\install.log') +
+          ' and run setup again.';
+        Exit;
+      end;
+      if LivenessCycles >= 10 then LivenessCycles := 0;
       Sleep(50);
     end;
     RefreshBootstrapProgress;
@@ -373,6 +432,7 @@ begin
     BootstrapCancelButton.Visible := False;
     DeleteFile(BootstrapStatusPath);
     DeleteFile(BootstrapCompletionPath);
+    DeleteFile(BootstrapProcessPath);
     if not BootstrapCancelRequested then DeleteFile(BootstrapCancelPath);
     BootstrapProgress.Hide;
   end;

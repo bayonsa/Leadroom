@@ -34,8 +34,8 @@ high-severity defect caps the stage at 7.
 | 3 | Repository, collections, editing, and export | 4.8 | 8.6 | Passed |
 | 4 | Outreach, compliance, drafts, and email delivery | 4.9 | 8.7 | Passed |
 | 5 | Settings, models, storage, themes, and branding | 4.8 | 8.8 | Passed |
-| 6 | Desktop shell, packaging, installation, and shutdown | 4.5 | 4.5 | In progress |
-| 7 | Cross-app UI/UX, responsive behavior, accessibility, performance | TBD | TBD | Pending |
+| 6 | Desktop shell, packaging, installation, and shutdown | 4.5 | 8.7 | Passed |
+| 7 | Cross-app UI/UX, responsive behavior, accessibility, performance | TBD | TBD | In progress |
 
 ## Stage 0: Shared Baseline
 
@@ -230,6 +230,41 @@ ignoring the missing-model failure.
   not yet provide a graphical recovery chooser; that desktop recovery UX belongs
   to Stage 6. Moving Ollama models still requires restarting Ollama because its
   model directory is process-level configuration.
+
+## Stage 6: Desktop Shell, Packaging, Installation, and Shutdown
+
+### Findings
+
+| ID | Severity | Defect | Fix | Regression |
+|---|---|---|---|---|
+| DESK-001 | Critical | Inno Setup waited forever when the bootstrap helper exited before writing its completion file. | The helper now publishes its PID; Setup waits for startup with a bound and monitors process liveness until completion. | Installer contract test plus PowerShell parse and PlanOnly |
+| DESK-002 | High | Cancel did not stop Winget or Full Local child process trees, and a stalled Ollama response could block before headers or between stream lines. | Long-running native commands now run through a cancellable process-tree wrapper; every model-download async boundary polls cancellation. | Cancellable-bootstrap contract tests |
+| DESK-003 | High | Cancelling while a temporary Ollama service was starting could leave it orphaned. | `Wait-Ollama` now owns and stops the process on cancellation, timeout, or startup failure. | Bootstrap ownership assertion |
+| DESK-004 | High | A slow helper startup could time out while the helper later continued installing in the background. | Startup timeout now leaves a durable cancellation marker that the late helper observes before any installation work. | Installer watchdog contract test |
+| DESK-005 | High | Windows PowerShell 5.1 could ignore failed WSL native commands and continue to a false success. | Every WSL, PostgreSQL, download, import, and timer operation now checks its native exit code immediately. | All three Full Local scripts have fail-fast contract coverage |
+| DESK-006 | High | Full Local checked only the selected downloads drive even though the Ubuntu VHD may consume the system drive. | Preflight resolves the actual Ubuntu WSL base path and requires 30 GB free there before import. | WSL-storage capacity contract test |
+| DESK-007 | High | Closing the native window could leave Uvicorn or non-daemon workers alive indefinitely. | Shutdown escalates from graceful exit to Uvicorn force-exit, then uses a five-second worker bound before terminating the desktop process. | Graceful escalation and stuck-worker tests |
+| DESK-008 | High | Storage config, migration, inaccessible-drive, database-validation, and exports-directory failures could close the window silently while retaining the instance lock. | One startup recovery boundary now shows a native error, preserves the workspace, and always releases the lock. | Parameterized startup recovery tests |
+
+### Verification
+
+- 204 Python tests pass; 18 focused desktop and installer tests pass.
+- Ruff, dependency integrity, frontend ESLint, Vitest, and production build pass.
+- All installer PowerShell files parse successfully and bootstrap PlanOnly emits
+  a valid non-destructive plan.
+- Independent review found no remaining critical/high Stage 6 issue after the
+  second repair loop.
+
+### Score
+
+- Baseline: 4.5/10
+- Loop 1: 7.2/10
+- Loop 2: 7.9/10
+- Loop 3: 8.7/10
+- Final: **8.7/10**
+- Residual risks: Inno Setup is not installed in the development environment, so
+  compilation and a clean-machine installer smoke test remain release gates.
+  No setup or portable artifact was built during this stage.
 
 ## Stage Review Template
 

@@ -6,6 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 import run_desktop
 
 
@@ -95,3 +97,56 @@ def test_closing_native_window_stops_the_local_server(monkeypatch) -> None:
         private_mode=False,
         icon=str(icon_path),
     )
+
+
+def test_server_shutdown_escalates_when_graceful_stop_times_out() -> None:
+    server = SimpleNamespace(should_exit=False, force_exit=False)
+    server_thread = Mock()
+    server_thread.is_alive.side_effect = [True, False]
+
+    run_desktop._stop_server(server, server_thread)
+
+    assert server.should_exit is True
+    assert server.force_exit is True
+    assert server_thread.join.call_args_list[0].kwargs == {"timeout": 10}
+    assert server_thread.join.call_args_list[1].kwargs == {"timeout": 3}
+
+
+def test_desktop_hard_exits_when_background_worker_does_not_stop(monkeypatch) -> None:
+    server = SimpleNamespace(should_exit=False, force_exit=False)
+    server_thread = Mock()
+    server_thread.is_alive.return_value = False
+    worker = SimpleNamespace(name="lead-worker_0")
+    monkeypatch.setattr(run_desktop, "_active_worker_threads", Mock(return_value=[worker]))
+    hard_exit = Mock()
+    monkeypatch.setattr(run_desktop, "_hard_exit", hard_exit)
+
+    run_desktop._stop_server(server, server_thread, worker_timeout=0)
+
+    hard_exit.assert_called_once_with(0)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(ValueError("workspace database is invalid"), id="invalid-database"),
+        pytest.param(PermissionError("workspace drive is unavailable"), id="unavailable-drive"),
+        pytest.param(FileExistsError("migration destination changed"), id="migration-conflict"),
+        pytest.param(RuntimeError("migration marker does not match"), id="migration-marker"),
+        pytest.param(OSError("exports folder is read-only"), id="exports-folder"),
+    ],
+)
+def test_storage_error_is_shown_and_instance_lock_is_released(
+    monkeypatch, tmp_path, error
+) -> None:
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    monkeypatch.setenv("LEAD_SCRAPER_NO_BROWSER", "1")
+    monkeypatch.setattr(run_desktop, "_prepare_storage", Mock(side_effect=error))
+    show_error = Mock()
+    monkeypatch.setattr(run_desktop, "_show_startup_error", show_error)
+
+    run_desktop.main()
+
+    show_error.assert_called_once()
+    assert str(error) in show_error.call_args.args[1]
+    assert not run_desktop._INSTANCE_HANDLES
