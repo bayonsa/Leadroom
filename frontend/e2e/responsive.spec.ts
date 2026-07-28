@@ -44,3 +44,18 @@ test('primary workspaces remain contained at desktop, tablet, and mobile widths'
     await page.screenshot({ path: testInfo.outputPath(`repository-${viewport.width}.png`), fullPage: false })
   }
 })
+
+test('mobile navigation traps focus, closes with Escape, and restores the trigger', async ({ page }) => {
+  await mockWorkspaceData(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/runs')
+
+  const trigger = page.getByRole('button', { name: 'Toggle navigation' })
+  await trigger.click()
+  await expect(page.locator('#primary-navigation')).toHaveClass(/sidebar-open/)
+  await expect(page.locator('main')).toHaveAttribute('inert', '')
+
+  await page.keyboard.press('Escape')
+  await expect(page.locator('#primary-navigation')).not.toHaveClass(/sidebar-open/)
+  await expect(trigger).toBeFocused()
+})

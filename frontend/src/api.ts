@@ -33,8 +33,8 @@ export const api = {
   health: () => request<{ status: string; database: string }>('/health'),
   listRuns: () => request<RunSummary[]>('/runs'),
   getRun: (runId: string) => request<RunDetail>(`/runs/${runId}`),
-  createRun: (payload: RunCreate) =>
-    request<RunDetail>('/runs', { method: 'POST', body: JSON.stringify(payload) }),
+  createRun: (payload: RunCreate, signal?: AbortSignal) =>
+    request<RunDetail>('/runs', { method: 'POST', body: JSON.stringify(payload), signal }),
   discoveryHistory: (niche: string, location: string) =>
     request<MarketHistory>(`/discovery/history?niche=${encodeURIComponent(niche)}&location=${encodeURIComponent(location)}`),
   selectCandidate: (runId: string, domain: string, selected: boolean) =>

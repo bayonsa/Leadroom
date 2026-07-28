@@ -110,9 +110,32 @@ test('initial discovery opens a controllable search job', async ({ page }) => {
 
   await expect(page.getByText('Search in progress')).toBeVisible()
   await expect(page.getByRole('progressbar', { name: 'Searching for candidates' })).toBeVisible()
-  await expect(page.getByText('Contacting the search provider')).toBeVisible()
+  await expect(page.locator('.search-progress-head small')).toHaveText('Waiting for the first persisted candidates')
   await expect(page.getByRole('heading', { name: 'progress_run' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop' })).toBeVisible()
+})
+
+test('cancel stops a pending initial discovery request', async ({ page }) => {
+  await mockHealth(page)
+  await page.route('**/api/v1/discovery/history?*', (route) => route.fulfill({ contentType: 'application/json', body: JSON.stringify({ previous_runs: 0, seen_domains: 0, completed_leads: 0 }) }))
+  await page.route('**/api/v1/runs', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ contentType: 'application/json', body: '[]' })
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000))
+    if (!route.request().failure()) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ run: { id: 'late-run', run_name: 'late', status: 'searching', counts: {} }, candidates: [], leads: [] }) })
+    }
+  })
+
+  await page.goto('/new')
+  await page.getByLabel('Business niche').fill('independent salons')
+  await page.getByRole('button', { name: 'Find candidates' }).click()
+  await expect(page.getByText('Search in progress')).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel' }).click()
+  await expect(page).toHaveURL(/\/runs$/)
+  await expect(page.getByText('Create your first run')).toBeVisible()
 })
 
 test('a completed run can save its lead batch to the repository', async ({ page }) => {
@@ -187,6 +210,13 @@ test('repository presents merged contacts without page overflow', async ({ page 
   await expect(page.getByText('2 runs')).toBeVisible()
   await expect(page.getByRole('cell', { name: /construction contractors/ })).toBeVisible()
   await expect(page.getByRole('img', { name: 'Local file' })).toHaveAttribute('title', 'This lead includes local database evidence')
+  const actionBounds = await page.locator('.repository-panel tbody tr').first().evaluate((row) => {
+    const panel = row.closest('.repository-panel')!.getBoundingClientRect()
+    const actions = row.querySelector('.row-actions')!.getBoundingClientRect()
+    return { panelRight: panel.right, actionsRight: actions.right, actionsLeft: actions.left, panelLeft: panel.left }
+  })
+  expect(actionBounds.actionsRight).toBeLessThanOrEqual(actionBounds.panelRight + 1)
+  expect(actionBounds.actionsLeft).toBeGreaterThanOrEqual(actionBounds.panelLeft - 1)
   await page.getByLabel('Filter by source').selectOption('local')
   await expect(page.getByText('1 leads')).toBeVisible()
   await expect(page.getByText('J Sons and Co.')).toBeVisible()
@@ -204,6 +234,35 @@ test('repository presents merged contacts without page overflow', async ({ page 
   await expect(page.getByText('J Sons and Co.')).toHaveCount(0)
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false)
   await page.screenshot({ path: testInfo.outputPath(`repository-${testInfo.project.name}.png`), fullPage: true })
+})
+
+test('repository paginates large collections and explains empty filters', async ({ page }) => {
+  await mockHealth(page)
+  const manyLeads = Array.from({ length: 230 }, (_, index) => ({
+    ...leads[0],
+    business_name: `Company ${String(index + 1).padStart(3, '0')}`,
+    domain: `company-${index + 1}.example`,
+    website: `https://company-${index + 1}.example`,
+    source_run_ids: ['run-large'],
+    created_at: '2026-07-14T12:00:00Z',
+    updated_at: '2026-07-14T13:00:00Z',
+  }))
+  await page.route('**/api/v1/repository', (route) => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({ count: manyLeads.length, leads: manyLeads }),
+  }))
+
+  await page.goto('/repository')
+  await expect(page.locator('.repository-panel tbody tr')).toHaveCount(100)
+  await expect(page.getByText('Page 1 of 3')).toBeVisible()
+  await page.getByRole('button', { name: 'Next' }).click()
+  await expect(page.getByText('Page 2 of 3')).toBeVisible()
+  await expect(page.getByText('Company 101')).toBeVisible()
+
+  await page.getByLabel('Search saved leads').fill('no-such-company')
+  await expect(page.getByText('No matching leads')).toBeVisible()
+  await page.getByRole('button', { name: 'Clear filters' }).click()
+  await expect(page.getByText('Page 1 of 3')).toBeVisible()
 })
 
 test('repository lead can be edited, moved, and removed from its row', async ({ page }) => {

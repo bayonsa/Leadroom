@@ -1785,3 +1785,47 @@ html[data-theme="ember"] .collection-option em { color: #9a3412; background: #ff
   html[data-theme="ember"] .panel,
   html[data-theme="ember"] .settings-section { transition-duration: .01ms !important; animation-duration: .01ms !important; }
 }
+
+/* Theme changes may alter color and surface treatment, never Settings geometry. */
+.settings-page .page-header h1 { line-height: 1.15; }
+.settings-page .page-header p { line-height: 1.5; }
+.settings-page .page-header .button { min-height: 44px; }
+
+/* Light navigation rails must not inherit the default dark-sidebar copy. */
+html[data-theme="genesis"] .sidebar-meta strong,
+html[data-theme="ember"] .sidebar-meta strong,
+html[data-theme="insightdeck"] .sidebar-meta strong,
+html[data-theme="vercel"] .sidebar-meta strong,
+html[data-theme="trustblue"] .sidebar-meta strong,
+html[data-theme="zengrid"] .sidebar-meta strong { color: var(--ink); }
+
+html[data-theme="genesis"] .sidebar-meta small { color: #55555f; }
+html[data-theme="ember"] .sidebar-meta small { color: #625c57; }
+html[data-theme="insightdeck"] .sidebar-meta small { color: #526174; }
+html[data-theme="vercel"] .sidebar-meta small { color: #595959; }
+html[data-theme="trustblue"] .sidebar-meta small { color: #586265; }
+html[data-theme="zengrid"] .sidebar-meta small { color: #6b645f; }
+
+/* Secondary copy follows the selected control's foreground in both light
+   selections and inverted selections. */
+:is(
+  .discovery-option:has(input:checked),
+  .source-option.selected,
+  .crawl-option.selected,
+  .storage-mode label.selected,
+  .provider-switch label.selected,
+  .model-picker-row.selected,
+  .installed-model.selected
+) strong {
+  color: inherit;
+}
+
+.discovery-option:has(input:checked) .discovery-copy > span,
+.source-option.selected > em,
+.crawl-option.selected :is(em, i),
+.storage-mode label.selected small,
+.provider-switch label.selected small,
+.model-picker-row.selected .model-row-copy > small,
+.installed-model.selected > span:nth-child(2) small {
+  color: color-mix(in srgb, currentColor 82%, transparent);
+}
