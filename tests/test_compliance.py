@@ -56,7 +56,22 @@ class ComplianceTests(unittest.TestCase):
         exported = self.service.export_approved([draft["id"]])
 
         self.assertEqual(approved["approved_by"], "Reviewer")
+        self.assertTrue(approved["corporate_status_confirmed"])
+        self.assertTrue(approved["privacy_notice_confirmed"])
+        self.assertEqual(approved["opt_out_address"], "privacy@example-agency.test")
         self.assertEqual(exported[0]["status"], "exported")
+
+    def test_draft_rejects_invalid_opt_out_address(self):
+        with self.assertRaisesRegex(ValueError, "Invalid opt-out"):
+            self.service.create_draft(
+                run_id=self.run_id,
+                domain=SITE["domain"],
+                subscriber_type="corporate",
+                lawful_basis_note="Legitimate interests assessment reference LIA-001.",
+                sender_identity="Example Agency Ltd",
+                opt_out_address="privacy mailbox",
+                offer_summary="We review appointment workflows.",
+            )
 
     def test_suppression_is_minimized_and_blocks_draft(self):
         suppression = self.service.add_suppression("hello@example-salon.test", "email", "Recipient opted out")
@@ -173,6 +188,69 @@ class ComplianceTests(unittest.TestCase):
         self.assertEqual(listed["status"], "uncertain")
         self.assertEqual(listed["delivery_status"], "uncertain")
         self.assertEqual(listed["provider_message_id"], "<stable@example.test>")
+        with self.assertRaisesRegex(ValueError, "already exists"):
+            self._create_draft()
+        self.assertEqual(self.service.preflight_run(self.run_id)["eligible"], 0)
+
+    def test_queue_revalidates_lead_after_human_approval(self):
+        draft = self._create_draft()
+        self.service.approve_draft(draft["id"], "Reviewer", True, True)
+        self.service.repository.update_lead(self.run_id, SITE["domain"], {"lead_score": 2})
+
+        with self.assertRaisesRegex(ValueError, "Lead data changed"):
+            self.service.queue_deliveries([draft["id"]])
+
+    def test_delivery_account_must_receive_opt_out_requests(self):
+        draft = self._create_draft()
+
+        with self.assertRaisesRegex(ValueError, "opt-out address"):
+            self.service.validate_delivery_account(
+                [draft["id"]],
+                {"sender@different-agency.test"},
+            )
+        self.service.validate_delivery_account(
+            [draft["id"]],
+            {"privacy@example-agency.test"},
+        )
+
+    def test_parent_domain_suppression_blocks_subdomain_draft(self):
+        site = {
+            **SITE,
+            "url": "https://salon.example.co.uk/contact",
+            "homepage": "https://salon.example.co.uk/",
+            "domain": "salon.example.co.uk",
+        }
+        self.service.repository.add_candidates(self.run_id, [site])
+        candidate_id = self.service.repository.claim(self.run_id, site["domain"])
+        lead = self._lead("hello@salon.example.co.uk")
+        lead.update({"domain": site["domain"], "website": site["homepage"], "contact_page": site["url"]})
+        lead["field_evidence"]["generic_email"]["source_url"] = site["url"]
+        self.service.repository.complete(candidate_id, lead)
+        draft = self.service.create_draft(
+            run_id=self.run_id,
+            domain=site["domain"],
+            subscriber_type="corporate",
+            lawful_basis_note="Legitimate interests assessment reference LIA-001.",
+            sender_identity="Example Agency Ltd",
+            opt_out_address="privacy@example-agency.test",
+            offer_summary="We review appointment workflows.",
+        )
+
+        self.service.add_suppression("example.co.uk", "domain", "Parent business opted out")
+
+        listed = next(item for item in self.service.list_drafts() if item["id"] == draft["id"])
+        self.assertEqual(listed["status"], "blocked")
+
+    def test_uncertain_delivery_keeps_blocked_suppression_state(self):
+        draft = self._create_draft()
+        self.service.approve_draft(draft["id"], "Reviewer", True, True)
+        self.service.queue_deliveries([draft["id"]])
+        self.service.mark_delivery_started(draft["id"], "<stable@example.test>")
+        self.service.add_suppression(SITE["domain"], "domain", "Business opted out")
+
+        self.service.mark_delivery_uncertain(draft["id"], "<stable@example.test>", "Connection lost")
+
+        self.assertEqual(self.service.list_drafts()[0]["status"], "blocked")
 
     def test_deletion_removes_lead_but_preserves_suppression(self):
         result = self.service.delete_lead_data(self.run_id, SITE["domain"], "Data subject deletion request")

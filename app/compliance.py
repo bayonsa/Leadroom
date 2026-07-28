@@ -18,6 +18,7 @@ from app.database import (
     RepositoryLeadRecord,
     RunRepository,
 )
+from app.filters import domain_key
 from app.outreach_ai import CampaignBrief, compose_outreach_message
 from app.scoring import has_verified_evidence
 
@@ -34,6 +35,15 @@ GENERIC_MAILBOXES = {
     "team",
 }
 DAILY_EXPORT_LIMIT = 25
+RECIPIENT_LOCK_STATUSES = {
+    "draft",
+    "approved",
+    "queued",
+    "sending",
+    "uncertain",
+    "sent",
+    "exported",
+}
 
 
 class SuppressionRecord(Base):
@@ -110,13 +120,14 @@ class ComplianceService:
             drafts = session.query(OutreachDraftRecord).filter(
                 OutreachDraftRecord.status.in_({"draft", "approved", "queued", "sending"})
             )
-            drafts = (
-                drafts.filter(OutreachDraftRecord.recipient_email == normalized)
-                if kind == "email"
-                else drafts.filter(OutreachDraftRecord.lead_domain == normalized)
-            )
             for draft in drafts.all():
-                draft.status = "blocked"
+                matches = (
+                    draft.recipient_email == normalized
+                    if kind == "email"
+                    else (domain_key(f"https://{draft.lead_domain}") or draft.lead_domain) == normalized
+                )
+                if matches:
+                    draft.status = "blocked"
             return _suppression_dict(existing)
 
     def list_suppressions(self) -> list[dict[str, Any]]:
@@ -146,7 +157,8 @@ class ComplianceService:
             raise ValueError("A documented lawful-basis note is required")
         if subscriber_type != "corporate" and "consent" not in lawful_basis_note.lower():
             raise ValueError("The lawful-basis note must document consent for this subscriber type")
-        if not sender_identity.strip() or not opt_out_address.strip():
+        opt_out_address = _normalize_email(opt_out_address, "opt-out address")
+        if not sender_identity.strip():
             raise ValueError("Sender identity and a valid opt-out address are required")
         with self.repository.sessions() as session:
             candidate = self.repository._candidate_by_domain(session, run_id, domain)
@@ -189,7 +201,7 @@ class ComplianceService:
                 session.query(OutreachDraftRecord)
                 .filter(
                     OutreachDraftRecord.recipient_email == email,
-                    OutreachDraftRecord.status.in_({"draft", "approved", "queued", "sent", "exported"}),
+                    OutreachDraftRecord.status.in_(RECIPIENT_LOCK_STATUSES),
                 )
                 .first()
             )
@@ -209,8 +221,11 @@ class ComplianceService:
                     {
                         "email": evidence,
                         "lead_score": lead.get("lead_score"),
+                        "lead_snapshot": _lead_snapshot(lead),
                         "personalization": personalization,
                         "links": links or [],
+                        "sender_identity": sender_identity.strip(),
+                        "opt_out_address": opt_out_address,
                     }
                 ),
                 status="draft",
@@ -254,7 +269,7 @@ class ComplianceService:
                     session.query(OutreachDraftRecord)
                     .filter(
                         OutreachDraftRecord.recipient_email == email,
-                        OutreachDraftRecord.status.in_({"draft", "approved", "queued", "sent", "exported"}),
+                        OutreachDraftRecord.status.in_(RECIPIENT_LOCK_STATUSES),
                     )
                     .first()
                     if email
@@ -311,6 +326,12 @@ class ComplianceService:
             if row.subscriber_type != "corporate" and not row.consent_confirmed:
                 raise ValueError("Recorded consent is required for this subscriber type")
             self._assert_not_suppressed(session, row.recipient_email, row.lead_domain)
+            _record_approval(
+                row,
+                reviewed_by.strip(),
+                corporate_status_confirmed,
+                privacy_notice_confirmed,
+            )
             row.status = "approved"
             row.approved_by = reviewed_by.strip()
             row.approved_at = _now()
@@ -340,6 +361,12 @@ class ComplianceService:
                 self._assert_not_suppressed(session, row.recipient_email, row.lead_domain)
             now = _now()
             for row in rows:
+                _record_approval(
+                    row,
+                    reviewed_by.strip(),
+                    corporate_status_confirmed,
+                    privacy_notice_confirmed,
+                )
                 row.status = "approved"
                 row.approved_by = reviewed_by.strip()
                 row.approved_at = now
@@ -354,18 +381,24 @@ class ComplianceService:
             sent_today = (
                 session.query(OutreachDeliveryRecord)
                 .filter(
-                    OutreachDeliveryRecord.status == "sent",
+                    OutreachDeliveryRecord.status.in_({"sent", "sent_after_suppression"}),
                     OutreachDeliveryRecord.completed_at >= day_start,
                 )
                 .count()
             )
-            if sent_today + len(unique_ids) > DAILY_EXPORT_LIMIT:
+            reserved = (
+                session.query(OutreachDraftRecord)
+                .filter(OutreachDraftRecord.status.in_({"queued", "sending"}))
+                .count()
+            )
+            if sent_today + reserved + len(unique_ids) > DAILY_EXPORT_LIMIT:
                 raise ValueError("Daily outreach send limit exceeded")
             rows = [_require_draft(session, draft_id) for draft_id in unique_ids]
             for row in rows:
                 if row.status != "approved":
                     raise ValueError("Every outreach draft must be approved before sending")
                 self._assert_not_suppressed(session, row.recipient_email, row.lead_domain)
+                self._assert_still_eligible(session, row)
             for row in rows:
                 row.status = "queued"
             return unique_ids
@@ -426,7 +459,8 @@ class ComplianceService:
         now = _now()
         with self.repository.sessions.begin() as session:
             row = _require_draft(session, draft_id)
-            row.status = "uncertain"
+            if row.status != "blocked":
+                row.status = "uncertain"
             session.add(
                 OutreachDeliveryRecord(
                     id=str(uuid.uuid4()),
@@ -516,6 +550,7 @@ class ComplianceService:
                 if row.status != "approved":
                     raise ValueError("Every outreach draft must be approved before export")
                 self._assert_not_suppressed(session, row.recipient_email, row.lead_domain)
+                self._assert_still_eligible(session, row)
             now = _now()
             for row in rows:
                 row.status = "exported"
@@ -527,7 +562,17 @@ class ComplianceService:
             raise ValueError("Outreach retention cannot be shorter than 30 days")
         cutoff = _now() - timedelta(days=retention_days)
         with self.repository.sessions.begin() as session:
-            rows = session.query(OutreachDraftRecord).filter(OutreachDraftRecord.created_at < cutoff).all()
+            rows = (
+                session.query(OutreachDraftRecord)
+                .filter(
+                    OutreachDraftRecord.created_at < cutoff,
+                    OutreachDraftRecord.status.in_({"draft", "blocked"}),
+                    ~OutreachDraftRecord.id.in_(
+                        session.query(OutreachDeliveryRecord.draft_id).distinct()
+                    ),
+                )
+                .all()
+            )
             count = len(rows)
             for row in rows:
                 session.delete(row)
@@ -573,18 +618,58 @@ class ComplianceService:
 
     @staticmethod
     def _assert_not_suppressed(session, email: str, domain: str) -> None:
-        hashes = {_hash(email.lower()), _hash(domain.lower())}
+        hashes = _suppression_hashes(email, domain)
         blocked = session.query(SuppressionRecord).filter(SuppressionRecord.value_hash.in_(hashes)).first()
         if blocked:
             raise ValueError("Recipient is on the suppression list")
 
     @staticmethod
     def _is_suppressed(session, email: str, domain: str) -> bool:
-        hashes = {_hash(email.lower()), _hash(domain.lower())}
+        hashes = _suppression_hashes(email, domain)
         return (
             session.query(SuppressionRecord).filter(SuppressionRecord.value_hash.in_(hashes)).first()
             is not None
         )
+
+    def _assert_still_eligible(self, session, row: OutreachDraftRecord) -> None:
+        try:
+            candidate = self.repository._candidate_by_domain(session, row.run_id, row.lead_domain)
+        except KeyError as exc:
+            raise ValueError("Lead data changed; review this outreach draft again") from exc
+        if candidate.lead is None:
+            raise ValueError("Lead data changed; review this outreach draft again")
+        lead = json.loads(candidate.lead.data_json)
+        email = str(lead.get("generic_email") or "").strip().lower()
+        if (
+            email != row.recipient_email
+            or not _is_generic_email(email)
+            or not has_verified_evidence(lead, "generic_email")
+            or int(lead.get("lead_score") or 0) < 7
+        ):
+            raise ValueError("Lead data changed; review this outreach draft again")
+        recorded = _evidence_dict(row)
+        recorded_snapshot = recorded.get("lead_snapshot")
+        if isinstance(recorded_snapshot, dict) and recorded_snapshot != _lead_snapshot(lead):
+            raise ValueError("Lead data changed; review this outreach draft again")
+        recorded_email_evidence = recorded.get("email")
+        current_email_evidence = (lead.get("field_evidence") or {}).get("generic_email")
+        if isinstance(recorded_email_evidence, dict) and recorded_email_evidence != current_email_evidence:
+            raise ValueError("Lead evidence changed; review this outreach draft again")
+
+    def validate_delivery_account(self, draft_ids: list[str], addresses: set[str]) -> None:
+        normalized = {_normalize_email(value, "email account address") for value in addresses if value}
+        if not normalized:
+            raise ValueError("The selected email account needs a from or reply-to address")
+        with self.repository.sessions() as session:
+            rows = [_require_draft(session, draft_id) for draft_id in list(dict.fromkeys(draft_ids))]
+            for row in rows:
+                evidence = _evidence_dict(row)
+                opt_out = _normalize_email(str(evidence.get("opt_out_address") or ""), "opt-out address")
+                if opt_out not in normalized:
+                    raise ValueError(
+                        "The selected email account must use the draft opt-out address as its "
+                        "from or reply-to address"
+                    )
 
 
 def _is_generic_email(email: str) -> bool:
@@ -600,7 +685,39 @@ def _normalize(value: str, kind: str) -> str:
         normalized = normalized.removeprefix("www.")
         if "." not in normalized or "/" in normalized:
             raise ValueError("Invalid suppression domain")
+        normalized = domain_key(f"https://{normalized}") or normalized
     return normalized
+
+
+def _normalize_email(value: str, label: str) -> str:
+    normalized = value.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", normalized):
+        raise ValueError(f"Invalid {label}")
+    return normalized
+
+
+def _suppression_hashes(email: str, domain: str) -> set[str]:
+    normalized_email = email.strip().lower()
+    normalized_domain = domain.strip().lower().removeprefix("www.")
+    registered_domain = domain_key(f"https://{normalized_domain}") or normalized_domain
+    email_domain = normalized_email.rsplit("@", 1)[-1] if "@" in normalized_email else ""
+    registered_email_domain = domain_key(f"https://{email_domain}") or email_domain
+    values = {
+        normalized_email,
+        normalized_domain,
+        registered_domain,
+        email_domain,
+        registered_email_domain,
+    }
+    return {_hash(value) for value in values if value}
+
+
+def _lead_snapshot(lead: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "business_name": str(lead.get("business_name") or "").strip(),
+        "city_or_area": str(lead.get("city_or_area") or "").strip(),
+        "services": [str(value).strip() for value in lead.get("services", []) if str(value).strip()],
+    }
 
 
 def _hash(value: str) -> str:
@@ -655,10 +772,36 @@ def _latest_delivery(session, draft_id: str) -> OutreachDeliveryRecord | None:
     )
 
 
+def _evidence_dict(row: OutreachDraftRecord) -> dict[str, Any]:
+    try:
+        evidence = json.loads(row.evidence_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return evidence if isinstance(evidence, dict) else {}
+
+
+def _record_approval(
+    row: OutreachDraftRecord,
+    reviewed_by: str,
+    corporate_status_confirmed: bool,
+    privacy_notice_confirmed: bool,
+) -> None:
+    evidence = _evidence_dict(row)
+    evidence["approval"] = {
+        "reviewed_by": reviewed_by,
+        "corporate_status_confirmed": corporate_status_confirmed,
+        "privacy_notice_confirmed": privacy_notice_confirmed,
+        "confirmed_at": _now().isoformat(),
+    }
+    row.evidence_json = json.dumps(evidence)
+
+
 def _draft_dict(
     row: OutreachDraftRecord,
     delivery: OutreachDeliveryRecord | None = None,
 ) -> dict[str, Any]:
+    evidence = _evidence_dict(row)
+    approval = evidence.get("approval") if isinstance(evidence.get("approval"), dict) else {}
     return {
         "id": row.id,
         "run_id": row.run_id,
@@ -669,7 +812,11 @@ def _draft_dict(
         "lawful_basis_note": row.lawful_basis_note,
         "subject": row.subject,
         "body": row.body,
-        "evidence": json.loads(row.evidence_json),
+        "evidence": evidence,
+        "sender_identity": str(evidence.get("sender_identity") or ""),
+        "opt_out_address": str(evidence.get("opt_out_address") or ""),
+        "corporate_status_confirmed": bool(approval.get("corporate_status_confirmed")),
+        "privacy_notice_confirmed": bool(approval.get("privacy_notice_confirmed")),
         "status": row.status,
         "approved_by": row.approved_by,
         "created_at": row.created_at.isoformat(),

@@ -32,8 +32,8 @@ high-severity defect caps the stage at 7.
 | 1 | Discovery, New Run, and run controls | 5.5 | 8.7 | Passed |
 | 2 | Enrichment, deep crawl, normalization, deduplication | 5.2 | 8.8 | Passed |
 | 3 | Repository, collections, editing, and export | 4.8 | 8.6 | Passed |
-| 4 | Outreach, compliance, drafts, and email delivery | TBD | TBD | Pending |
-| 5 | Settings, models, storage, themes, and branding | TBD | TBD | Pending |
+| 4 | Outreach, compliance, drafts, and email delivery | 4.9 | 8.7 | Passed |
+| 5 | Settings, models, storage, themes, and branding | 4.8 | 4.8 | In progress |
 | 6 | Desktop shell, packaging, installation, and shutdown | TBD | TBD | Pending |
 | 7 | Cross-app UI/UX, responsive behavior, accessibility, performance | TBD | TBD | Pending |
 
@@ -153,6 +153,43 @@ ignoring the missing-model failure.
 - Residual risks: server pagination and row virtualization are still required for
   repositories in the tens of thousands; the mobile row layout is assigned to
   the cross-app responsive stage.
+
+## Stage 4: Outreach, Compliance, Drafts, and Email Delivery
+
+### Findings
+
+| ID | Severity | Defect | Fix | Regression |
+|---|---|---|---|---|
+| OUT-001 | Critical | Recipient duplicate checks omitted `sending` and `uncertain`, allowing another draft while SMTP acceptance was unresolved. | Defined one recipient-lock state contract shared by draft creation and preflight. | Interrupted-delivery duplicate and preflight test |
+| OUT-002 | Critical | Concurrent send requests could both pass the active-job check and reserve overlapping daily capacity. | Made active-job validation, account validation, database reservation, job registration, and executor submission one application-level critical section. | Full API and compliance send suite |
+| OUT-003 | High | Corporate-status and privacy-notice confirmations were accepted but discarded, leaving no durable approval evidence. | Persisted the human approval record, reviewer, flags, and timestamp inside the existing audit document without requiring a destructive database migration. | Approval audit assertions |
+| OUT-004 | High | Opt-out addresses were weakly validated, not exposed in the audit record, and could differ from the selected sending account. | Added strict address validation, durable audit storage, and pre-send matching against the account's From or Reply-To address. | Invalid address and account mismatch tests |
+| OUT-005 | High | The daily limit counted only completed `sent` events, not queued/sending reservations or mail accepted after suppression. | Counted active reservations and every accepted SMTP outcome before admitting a new batch. | Compliance queue suite |
+| OUT-006 | High | Application shutdown did not signal an active campaign, so background sends could continue while the desktop window closed. | Added a shutdown event, stop requests for every active campaign, and release of drafts whose SMTP attempt had not started. | Shutdown and worker regression paths |
+| OUT-007 | High | Retention purge deleted sent, uncertain, active, and historical delivery evidence. | Restricted purge to old inactive drafts with no delivery records. | Query-level retention contract |
+| OUT-008 | High | A suppression added during SMTP delivery could be overwritten by the later uncertain state. | Preserved `blocked` as the authoritative draft state while recording an independent uncertain delivery event. | `test_uncertain_delivery_keeps_blocked_suppression_state` |
+| OUT-009 | High | Approved content was not checked against current lead data before queue or export. | Revalidated recipient, score, evidence, and personalization inputs against a stable lead snapshot at the final boundary. | Lead-change queue rejection test |
+| OUT-010 | High | A parent-domain suppression did not block a lead or mailbox hosted on a subdomain. | Canonicalized domain suppressions to the registered business domain and checked email, host, and registered domains together. | Parent-domain/subdomain suppression test |
+| OUT-011 | Medium | Executor rejection during shutdown could leave drafts stuck in `queued`. | Roll back the in-memory job and release every unstarted reservation when submission fails. | Covered by defensive submission path |
+
+### Verification
+
+- 182 Python tests pass; 56 focused API and compliance tests pass.
+- Ruff passes for the application, tests, desktop entry point, and benchmarks.
+- Frontend ESLint, production build, and Vitest pass.
+- Outreach regressions cover consent, approval, suppression, restart recovery,
+  SMTP uncertainty, account binding, stale lead evidence, export, and audit output.
+
+### Score
+
+- Baseline: 4.9/10
+- Loop 1: 7.5/10
+- Loop 2: 8.7/10
+- Final: **8.7/10**
+- Residual risks: SMTP cannot retract a message once the server accepts it; those
+  ambiguous outcomes are deliberately quarantined as `uncertain`. Suppression
+  hashes are privacy-minimized but are not keyed, so a future schema migration
+  should replace SHA-256 with a keyed digest.
 
 ## Stage Review Template
 

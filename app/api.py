@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import ssl
+import threading
 import time
 import uuid
 from collections.abc import AsyncIterable, Callable
@@ -549,11 +550,27 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     app.state.model_downloads: dict[str, dict[str, Any]] = {}
     app.state.ollama_catalog_cache: dict[str, dict[str, Any]] = {}
     app.state.outreach_send_jobs: dict[str, dict[str, Any]] = {}
+    app.state.outreach_send_lock = threading.RLock()
+    app.state.shutting_down = threading.Event()
     app.state.discovery_jobs: dict[str, str] = {}
     app.state.enrichment_jobs: dict[str, str] = {}
 
     @app.on_event("shutdown")
     def shutdown_workers() -> None:
+        app.state.shutting_down.set()
+        queued_drafts: list[str] = []
+        with app.state.outreach_send_lock:
+            for job in app.state.outreach_send_jobs.values():
+                if job["status"] in {"queued", "sending"}:
+                    job["stop_requested"] = True
+                    job["message"] = "Application is closing; sending will stop after the current email"
+                    queued_drafts.extend(job.get("draft_ids", []))
+        if queued_drafts:
+            service = ComplianceService(app.state.database_path)
+            try:
+                service.release_queued(queued_drafts)
+            finally:
+                service.close()
         app.state.discovery_jobs.clear()
         app.state.enrichment_jobs.clear()
         app.state.executor.shutdown(wait=False, cancel_futures=True)
@@ -1290,7 +1307,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             provider = SMTPEmailProvider(_email_account_config(account))
             job["status"] = "sending"
             for index, draft_id in enumerate(draft_ids):
-                if job.get("stop_requested"):
+                if job.get("stop_requested") or app.state.shutting_down.is_set():
                     service.release_queued(draft_ids[index:])
                     job["status"] = "stopped"
                     job["message"] = "Sending stopped. Remaining drafts returned to approved."
@@ -1418,48 +1435,69 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
 
     @app.post("/api/v1/outreach/send", status_code=202)
     def send_outreach(payload: OutreachSend) -> dict[str, Any]:
-        active = next(
-            (job for job in app.state.outreach_send_jobs.values() if job["status"] in {"queued", "sending"}),
-            None,
-        )
-        if active:
-            raise ValueError("Another outreach send job is already active")
-        repo = repository()
-        try:
-            accounts, default_id = _email_accounts(repo.app_settings())
-        finally:
-            repo.engine.dispose()
-        account_id = payload.email_account_id or default_id
-        account = next((item for item in accounts if item["id"] == account_id), None)
-        if account is None:
-            raise ValueError("Select a configured email account before sending")
-        _email_account_config(account)
-        service = compliance()
-        try:
-            draft_ids = service.queue_deliveries(payload.draft_ids)
-        finally:
-            service.close()
-        job_id = uuid.uuid4().hex
-        job = {
-            "id": job_id,
-            "status": "queued",
-            "message": "Waiting to send",
-            "total": len(draft_ids),
-            "completed": 0,
-            "sent": 0,
-            "failed": 0,
-            "percent": 0,
-            "current_draft_id": "",
-            "email_account_id": account_id,
-            "email_account_label": account.get("label", ""),
-            "from_email": account.get("from_email", ""),
-            "stop_requested": False,
-            "results": [],
-            "updated_at": datetime.now().astimezone().isoformat(),
-        }
-        app.state.outreach_send_jobs[job_id] = job
-        app.state.executor.submit(process_outreach_send, job_id, draft_ids)
-        return job
+        with app.state.outreach_send_lock:
+            if app.state.shutting_down.is_set():
+                raise ValueError("The application is shutting down")
+            active = next(
+                (
+                    job
+                    for job in app.state.outreach_send_jobs.values()
+                    if job["status"] in {"queued", "sending"}
+                ),
+                None,
+            )
+            if active:
+                raise ValueError("Another outreach send job is already active")
+            repo = repository()
+            try:
+                accounts, default_id = _email_accounts(repo.app_settings())
+            finally:
+                repo.engine.dispose()
+            account_id = payload.email_account_id or default_id
+            account = next((item for item in accounts if item["id"] == account_id), None)
+            if account is None:
+                raise ValueError("Select a configured email account before sending")
+            config = _email_account_config(account)
+            service = compliance()
+            try:
+                service.validate_delivery_account(
+                    payload.draft_ids,
+                    {config.from_email, config.reply_to},
+                )
+                draft_ids = service.queue_deliveries(payload.draft_ids)
+            finally:
+                service.close()
+            job_id = uuid.uuid4().hex
+            job = {
+                "id": job_id,
+                "status": "queued",
+                "message": "Waiting to send",
+                "total": len(draft_ids),
+                "completed": 0,
+                "sent": 0,
+                "failed": 0,
+                "percent": 0,
+                "current_draft_id": "",
+                "email_account_id": account_id,
+                "email_account_label": account.get("label", ""),
+                "from_email": account.get("from_email", ""),
+                "stop_requested": False,
+                "draft_ids": draft_ids,
+                "results": [],
+                "updated_at": datetime.now().astimezone().isoformat(),
+            }
+            app.state.outreach_send_jobs[job_id] = job
+            try:
+                app.state.executor.submit(process_outreach_send, job_id, draft_ids)
+            except RuntimeError:
+                app.state.outreach_send_jobs.pop(job_id, None)
+                service = compliance()
+                try:
+                    service.release_queued(draft_ids)
+                finally:
+                    service.close()
+                raise ValueError("The application is shutting down") from None
+            return job
 
     @app.get("/api/v1/outreach/send/{job_id}")
     def outreach_send_status(job_id: str) -> dict[str, Any]:
