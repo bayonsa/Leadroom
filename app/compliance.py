@@ -566,16 +566,31 @@ class ComplianceService:
                 session.query(OutreachDraftRecord)
                 .filter(
                     OutreachDraftRecord.created_at < cutoff,
-                    OutreachDraftRecord.status.in_({"draft", "blocked"}),
-                    ~OutreachDraftRecord.id.in_(
-                        session.query(OutreachDeliveryRecord.draft_id).distinct()
-                    ),
+                    ~OutreachDraftRecord.status.in_({"queued", "sending"}),
                 )
                 .all()
             )
-            count = len(rows)
+            count = 0
             for row in rows:
-                session.delete(row)
+                has_delivery = (
+                    session.query(OutreachDeliveryRecord.id)
+                    .filter(OutreachDeliveryRecord.draft_id == row.id)
+                    .first()
+                    is not None
+                )
+                if has_delivery:
+                    row.lead_domain = "redacted.invalid"
+                    row.recipient_email = f"purged-{row.id}@redacted.invalid"
+                    row.lawful_basis_note = ""
+                    row.subject = ""
+                    row.body = ""
+                    row.evidence_json = json.dumps(
+                        {"purged": True, "purged_at": _now().isoformat()}
+                    )
+                    row.approved_by = ""
+                else:
+                    session.delete(row)
+                count += 1
             return count
 
     def delete_lead_data(self, run_id: str, domain: str, reason: str) -> dict[str, Any]:

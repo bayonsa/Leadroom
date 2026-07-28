@@ -1,8 +1,9 @@
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from app.compliance import ComplianceService
+from app.compliance import ComplianceService, OutreachDraftRecord
 from app.config import ScraperConfig
 from app.database import RunRepository
 
@@ -251,6 +252,26 @@ class ComplianceTests(unittest.TestCase):
         self.service.mark_delivery_uncertain(draft["id"], "<stable@example.test>", "Connection lost")
 
         self.assertEqual(self.service.list_drafts()[0]["status"], "blocked")
+
+    def test_retention_purges_pii_but_keeps_delivery_audit(self):
+        draft = self._create_draft()
+        self.service.approve_draft(draft["id"], "Named Reviewer", True, True)
+        self.service.queue_deliveries([draft["id"]])
+        self.service.mark_delivery_started(draft["id"])
+        self.service.complete_delivery(draft["id"], "sent", "<message@example.test>")
+        with self.service.repository.sessions.begin() as session:
+            row = session.get(OutreachDraftRecord, draft["id"])
+            row.created_at = datetime.now(UTC) - timedelta(days=120)
+
+        self.assertEqual(self.service.purge_drafts(90), 1)
+
+        retained = self.service.list_drafts()[0]
+        self.assertEqual(retained["recipient_email"], f"purged-{draft['id']}@redacted.invalid")
+        self.assertEqual(retained["lead_domain"], "redacted.invalid")
+        self.assertEqual(retained["body"], "")
+        self.assertEqual(retained["approved_by"], "")
+        self.assertTrue(retained["evidence"]["purged"])
+        self.assertEqual(retained["delivery_status"], "sent")
 
     def test_deletion_removes_lead_but_preserves_suppression(self):
         result = self.service.delete_lead_data(self.run_id, SITE["domain"], "Data subject deletion request")

@@ -550,6 +550,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     app.state.model_downloads: dict[str, dict[str, Any]] = {}
     app.state.ollama_catalog_cache: dict[str, dict[str, Any]] = {}
     app.state.outreach_send_jobs: dict[str, dict[str, Any]] = {}
+    app.state.outreach_send_configs: dict[str, EmailDeliveryConfig] = {}
     app.state.outreach_send_lock = threading.RLock()
     app.state.shutting_down = threading.Event()
     app.state.discovery_jobs: dict[str, str] = {}
@@ -1298,13 +1299,10 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         job = app.state.outreach_send_jobs[job_id]
         service = compliance()
         try:
-            settings = service.repository.app_settings()
-            accounts, default_id = _email_accounts(settings)
-            account_id = job.get("email_account_id") or default_id
-            account = next((item for item in accounts if item["id"] == account_id), None)
-            if account is None:
-                raise ValueError("The selected email account is no longer available")
-            provider = SMTPEmailProvider(_email_account_config(account))
+            config = app.state.outreach_send_configs.get(job_id)
+            if config is None:
+                raise ValueError("The email account snapshot is no longer available")
+            provider = SMTPEmailProvider(config)
             job["status"] = "sending"
             for index, draft_id in enumerate(draft_ids):
                 if job.get("stop_requested") or app.state.shutting_down.is_set():
@@ -1365,6 +1363,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         finally:
             job["current_draft_id"] = ""
             job["updated_at"] = datetime.now().astimezone().isoformat()
+            app.state.outreach_send_configs.pop(job_id, None)
             service.close()
 
     @app.get("/api/v1/compliance/suppressions")
@@ -1487,10 +1486,12 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
                 "updated_at": datetime.now().astimezone().isoformat(),
             }
             app.state.outreach_send_jobs[job_id] = job
+            app.state.outreach_send_configs[job_id] = config
             try:
                 app.state.executor.submit(process_outreach_send, job_id, draft_ids)
             except RuntimeError:
                 app.state.outreach_send_jobs.pop(job_id, None)
+                app.state.outreach_send_configs.pop(job_id, None)
                 service = compliance()
                 try:
                     service.release_queued(draft_ids)
