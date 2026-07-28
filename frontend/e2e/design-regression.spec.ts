@@ -103,3 +103,26 @@ test('local data engine reports coverage and returns a private-index result', as
   expect(errors).toEqual([])
   await page.screenshot({ path: testInfo.outputPath('local-data.png'), fullPage: true })
 })
+
+test('empty repository and outreach toggles use compact responsive controls', async ({ page }, testInfo) => {
+  await mockWorkspaceData(page)
+  await page.route('**/api/v1/repository', (route) => route.fulfill({ json: { count: 0, leads: [] } }))
+
+  await page.goto('/repository')
+  const emptyRepository = page.locator('.repository-empty')
+  await expect(emptyRepository).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Browse runs' })).toBeVisible()
+  const compactHeight = page.viewportSize()!.width <= 620 ? 230 : 180
+  expect((await emptyRepository.boundingBox())?.height).toBeLessThanOrEqual(compactHeight)
+  expect(await emptyRepository.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true)
+  await page.screenshot({ path: testInfo.outputPath('repository-empty.png'), fullPage: true })
+
+  await page.goto('/outreach')
+  const consent = page.getByRole('switch', { name: /Consent recorded/ })
+  const personalization = page.getByRole('switch', { name: /AI personalization/ })
+  await expect(consent).not.toBeChecked()
+  await expect(personalization).toBeChecked()
+  const toggleWidths = await page.locator('.option-toggle').evaluateAll((items) => items.map((item) => item.getBoundingClientRect().width))
+  expect(new Set(toggleWidths.map(Math.round)).size).toBe(1)
+  await page.screenshot({ path: testInfo.outputPath('repository-outreach-controls.png'), fullPage: true })
+})
