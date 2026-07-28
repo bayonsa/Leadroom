@@ -13,6 +13,11 @@
 ::view-transition-new(root) { animation: theme-fade-in 220ms ease-out both; }
 @keyframes theme-fade-out { to { opacity: 0; } }
 @keyframes theme-fade-in { from { opacity: 0; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes search-sweep { 0% { transform: translateX(-110%); } 50% { transform: translateX(105%); } 100% { transform: translateX(310%); } }
+@keyframes pulse { 50% { opacity: .45; transform: scale(.8); } }
+@keyframes reveal { from { opacity: 0; transform: translateY(4px); } }
+@keyframes loading-shimmer { to { background-position: -200% 0; } }
 
 .shell { min-height: 100vh; display: grid; grid-template: 64px 1fr / 240px 1fr; background: var(--canvas); }
 .topbar { grid-column: 1 / -1; display: flex; align-items: center; padding: 0 var(--space-5); background: var(--surface); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 50; }
@@ -47,6 +52,10 @@
 .icon-button:hover { color: var(--ink); background: #edf1ee; }
 .icon-button svg { width: 18px; }
 .mobile-menu { display: none; margin-right: 8px; }
+.loading { min-height: 180px; padding: 24px; display: grid; align-content: center; gap: 12px; }
+.loading i { height: 16px; display: block; border-radius: 4px; background: linear-gradient(90deg, var(--line) 25%, var(--subtle) 50%, var(--line) 75%); background-position: 200% 0; background-size: 200% 100%; animation: loading-shimmer 1.35s ease-in-out infinite; }
+.loading i:nth-of-type(2) { width: 82%; }
+.loading i:nth-of-type(3) { width: 64%; }
 
 .table-wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 7px; box-shadow: var(--shadow-sm); }
 table { width: 100%; border-collapse: collapse; font-size: var(--type-body); font-variant-numeric: tabular-nums; }
@@ -983,6 +992,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
   ::view-transition-old(root),
   ::view-transition-new(root),
   .settings-success,
+  .loading i,
   .spin,
   .search-progress-track > span,
   .sync-state.sync-running i,
@@ -1095,6 +1105,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--green); box-shad
   .email-account-editor footer .button { width: 100%; }
   .outreach-sender-select { min-width: 0; width: 100%; }
 }
+@media (max-width: 620px) {
   .repository-empty { min-height: 0; padding: 20px 18px; grid-template-columns: 44px minmax(0, 1fr); gap: 14px; }
   .repository-empty-icon { width: 44px; height: 44px; }
   .repository-empty-action { grid-column: 1 / -1; width: 100%; justify-self: stretch; }
+}

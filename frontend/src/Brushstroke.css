@@ -685,7 +685,7 @@ tbody tr:hover, .runs-table tbody tr:hover td { background: #fdf4e0; }
 .active-collection-filters button { min-height: 28px; max-width: 220px; padding: 3px 7px; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); background: var(--surface); font-size: var(--type-caption); font-weight: var(--weight-bold); text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .active-collection-filters button svg { width: 11px; flex: 0 0 auto; }
 .active-collection-filters .clear-collection-filters { border-color: transparent; color: var(--coral); background: transparent; }
-.collection-manager { width: min(680px, 100vw); }
+.collection-manager { width: min(680px, 100vw); position: relative; }
 .collection-manager-tools { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
 .collection-manager-tools > span { color: var(--muted); font-size: var(--type-caption); white-space: nowrap; }
 .collection-manager-list { padding: 6px 12px 150px; overflow: auto; }

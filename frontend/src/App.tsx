@@ -1132,9 +1132,9 @@ function SearchProgress({ mode }: { mode: 'initial' | 'continuation' }) {
     : ['Opening the next result pages', 'Skipping domains already seen', 'Checking market relevance', 'Preparing the next candidate batch']
   const stage = stages[Math.min(stages.length - 1, Math.floor(elapsed / 4))]
   const time = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
-  return <div className="search-progress" role="status" aria-live="polite"><div className="search-progress-head"><span><ScanSearch /><span><strong>Search in progress</strong><small>{stage}</small></span></span><time>{time}</time></div><div className="search-progress-track" role="progressbar" aria-label="Searching for candidates" aria-valuetext={`${stage}, ${time} elapsed`}><span /></div><div className="search-progress-foot"><span>Results are filtered before they enter this run.</span><span>Elapsed</span></div></div>
+  return <div className="search-progress"><span className="sr-only" role="status" aria-live="polite">{stage}</span><div className="search-progress-head"><span><ScanSearch /><span><strong>Search in progress</strong><small>{stage}</small></span></span><time aria-hidden="true">{time}</time></div><div className="search-progress-track" role="progressbar" aria-label="Searching for candidates" aria-valuetext={stage}><span /></div><div className="search-progress-foot"><span>Results are filtered before they enter this run.</span><span>Elapsed</span></div></div>
 }
-function LoadingRows() { return <div className="loading" aria-label="Loading"><span /><span /><span /></div> }
+function LoadingRows() { return <div className="loading" role="status" aria-live="polite"><span className="sr-only">Loading</span><i /><i /><i /></div> }
 function EmptyState() {
   return <div className="empty-state runs-empty">
     <span className="runs-empty-icon" aria-hidden="true"><Search /></span>
