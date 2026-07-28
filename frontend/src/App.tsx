@@ -70,7 +70,7 @@ import './Themes.css'
 
 const statusLabels: Record<string, string> = {
   created: 'Created', ready: 'Ready', queued: 'Queued', processing: 'Enriching',
-  completed: 'Completed', failed: 'Failed', cancelled: 'Skipped', running: 'Enriching',
+  completed: 'Completed', no_contact: 'No contact', failed: 'Failed', cancelled: 'Skipped', running: 'Enriching',
   searching: 'Searching', stopped: 'Stopped', approved: 'Approved', sent: 'Sent', blocked: 'Blocked',
 }
 
@@ -397,7 +397,7 @@ function RunPage() {
   if (!detail.data) return null
   const { run, candidates, leads } = detail.data
   const selected = candidates.filter((item) => item.status !== 'cancelled').length
-  const done = (run.counts.completed ?? 0) + (run.counts.failed ?? 0)
+  const done = (run.counts.completed ?? 0) + (run.counts.no_contact ?? 0) + (run.counts.failed ?? 0)
   const active = run.status === 'searching' || run.status === 'running'
   return <section className="run-page">
     <PageHeader eyebrow="Run workspace" title={run.run_name} subtitle={`Run ${run.id.slice(0, 8)} · ${candidates.length} candidate${candidates.length === 1 ? '' : 's'}`} action={<div className="header-actions">

@@ -41,9 +41,10 @@ SECRET_SETTING_KEYS = {"llm_api_key", "smtp_password", "email_accounts"}
 RUN_TERMINAL = {"completed", "cancelled", "failed", "stopped"}
 CANDIDATE_TRANSITIONS = {
     "queued": {"processing", "cancelled"},
-    "processing": {"completed", "failed", "queued", "cancelled"},
+    "processing": {"completed", "no_contact", "failed", "queued", "cancelled"},
     "failed": {"queued", "processing", "cancelled"},
     "completed": set(),
+    "no_contact": set(),
     "cancelled": {"queued"},
 }
 _REPOSITORY_IMPORT_LOCK = threading.RLock()
@@ -700,6 +701,18 @@ class RunRepository:
             record.data_json = json.dumps(lead, ensure_ascii=False)
             session.add(record)
             self._event(session, row.run_id, "candidate_completed", {"domain": row.domain})
+
+    def complete_without_contact(self, candidate_id: int) -> None:
+        with self.sessions.begin() as session:
+            row = session.get(CandidateRecord, candidate_id)
+            if row is None:
+                raise KeyError(f"Unknown candidate: {candidate_id}")
+            self._transition(row, "no_contact")
+            row.lease_until = None
+            row.last_error = "No public business email or phone was found"
+            if row.lead is not None:
+                session.delete(row.lead)
+            self._event(session, row.run_id, "candidate_no_contact", {"domain": row.domain})
 
     def fail(self, candidate_id: int, error: str) -> None:
         with self.sessions.begin() as session:

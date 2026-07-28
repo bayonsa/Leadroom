@@ -8,6 +8,7 @@ from scrapegraphai.graphs import SmartScraperGraph
 
 from app.config import ScraperConfig
 from app.enrichment import HtmlFetcher, apply_enrichment, enrich_public_pages
+from app.filters import same_business_domain
 from app.models import LeadExtraction
 from app.normalizer import normalize_lead
 from app.parser import parse_model_output
@@ -56,12 +57,16 @@ def scrape_business_site(
     url: str,
     config: ScraperConfig,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     public_data, field_evidence, enrichment_errors = enrich_public_pages(
         url,
         config,
         progress_callback=progress_callback,
+        cancel_check=cancel_check,
     )
+    if cancel_check and cancel_check():
+        raise InterruptedError("Enrichment stopped")
     provider = config.model.split("/", 1)[0] if "/" in config.model else "ollama"
     llm_config: dict[str, Any] = {
         "model": config.model,
@@ -86,9 +91,13 @@ def scrape_business_site(
         retry_attempts=config.retry_attempts,
         cache_ttl_hours=config.cache_ttl_hours,
         browser_fallback=config.browser_fallback,
+        advanced_fetching=config.advanced_fetching,
     )
     try:
-        guarded_html = source_fetcher.fetch(url).html
+        guarded_page = source_fetcher.fetch(url)
+        if not same_business_domain(guarded_page.url, url):
+            raise ValueError("Website redirected to an unrelated domain")
+        guarded_html = guarded_page.html
     finally:
         source_fetcher.close()
     graph = SmartScraperGraph(prompt=LEAD_PROMPT, source=guarded_html, config=graph_config)

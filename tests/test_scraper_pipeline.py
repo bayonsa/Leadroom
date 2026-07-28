@@ -15,6 +15,7 @@ class ScraperPipelineTests(unittest.TestCase):
     @patch("app.scraper.SmartScraperGraph")
     def test_scraper_passes_json_schema_and_normalizes_result(self, graph_class, fetcher_class, _enrich):
         fetcher_class.return_value.fetch.return_value.html = "<html></html>"
+        fetcher_class.return_value.fetch.return_value.url = "https://schema.example/"
         graph_class.return_value.run.return_value = {
             "content": {
                 "is_valid_lead": True,
@@ -39,6 +40,7 @@ class ScraperPipelineTests(unittest.TestCase):
         self, graph_class, fetcher_class, _enrich
     ):
         fetcher_class.return_value.fetch.return_value.html = "<html></html>"
+        fetcher_class.return_value.fetch.return_value.url = "https://api.example/"
         graph_class.return_value.run.return_value = {
             "content": {"business_name": "API Salon", "website": "https://api.example/"}
         }
@@ -63,6 +65,7 @@ class ScraperPipelineTests(unittest.TestCase):
     @patch("app.scraper.SmartScraperGraph")
     def test_scraper_preserves_schema_validation_errors(self, graph_class, fetcher_class, _enrich):
         fetcher_class.return_value.fetch.return_value.html = "<html></html>"
+        fetcher_class.return_value.fetch.return_value.url = "https://broken.example/"
         graph_class.return_value.run.return_value = {
             "content": {
                 "is_valid_lead": True,
@@ -77,6 +80,33 @@ class ScraperPipelineTests(unittest.TestCase):
         self.assertFalse(lead["is_valid_lead"])
         self.assertTrue(lead["validation_errors"])
         self.assertIn("not-a-list", lead["raw_output"])
+
+    @patch("app.scraper.enrich_public_pages", return_value=({}, {}, []))
+    @patch("app.scraper.HtmlFetcher")
+    def test_scraper_propagates_adaptive_setting_to_llm_source_fetch(self, fetcher_class, _enrich):
+        fetcher_class.return_value.fetch.return_value.html = "<html></html>"
+        fetcher_class.return_value.fetch.return_value.url = "https://example.com/"
+        config = ScraperConfig(
+            niche="salons",
+            location="London",
+            advanced_fetching=False,
+        )
+
+        with patch("app.scraper.SmartScraperGraph") as graph:
+            graph.return_value.run.return_value = {}
+            scrape_business_site("https://example.com/", config)
+
+        self.assertFalse(fetcher_class.call_args.kwargs["advanced_fetching"])
+
+    @patch("app.scraper.enrich_public_pages", return_value=({}, {}, []))
+    @patch("app.scraper.HtmlFetcher")
+    def test_scraper_rejects_an_unrelated_redirect_before_llm(self, fetcher_class, _enrich):
+        fetcher_class.return_value.fetch.return_value.html = "<html></html>"
+        fetcher_class.return_value.fetch.return_value.url = "https://platform.example/"
+        config = ScraperConfig(niche="salons", location="London")
+
+        with self.assertRaisesRegex(ValueError, "unrelated domain"):
+            scrape_business_site("https://salon.example/", config)
 
     @patch("app.pipeline.search_business_sites")
     @patch("app.pipeline.scrape_business_site")
@@ -152,6 +182,49 @@ class ScraperPipelineTests(unittest.TestCase):
             )
         scrape.assert_not_called()
         self.assertTrue(output["summary"]["cancelled"])
+
+    @patch("app.pipeline.search_business_sites")
+    @patch("app.pipeline.scrape_business_site")
+    def test_pipeline_does_not_persist_a_result_without_public_contacts(self, scrape, search):
+        search.return_value = [
+            {
+                "title": "No Contact Studio",
+                "url": "https://nocontact.example/",
+                "homepage": "https://nocontact.example/",
+                "snippet": "London studio",
+                "domain": "nocontact.example",
+            }
+        ]
+        scrape.return_value = {
+            **self._lead(
+            "No Contact Studio",
+            "https://nocontact.example/",
+            "nocontact.example",
+            ),
+            "generic_email": "",
+            "emails": [],
+            "phone": "",
+            "phones": [],
+            "lead_score": 0,
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            database_path = Path(temp_dir) / "test.db"
+            config = ScraperConfig(
+                niche="studios",
+                location="London",
+                output_dir=Path(temp_dir),
+                database_path=database_path,
+                delay_seconds=0,
+            )
+            run_pipeline(config)
+            repository = RunRepository(database_path)
+            run_id = repository.list_runs()[0]["id"]
+            candidates = repository.list_candidates(run_id)
+            leads = repository.load_leads(run_id)
+            repository.engine.dispose()
+
+        self.assertEqual(candidates[0]["status"], "no_contact")
+        self.assertEqual(leads, [])
 
     @patch("app.pipeline.save_run", side_effect=OSError("disk full"))
     @patch("app.pipeline.search_business_sites", return_value=[])

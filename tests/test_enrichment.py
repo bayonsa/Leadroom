@@ -1,3 +1,4 @@
+import gzip
 import tempfile
 import unittest
 from pathlib import Path
@@ -292,6 +293,100 @@ class EnrichmentTests(unittest.TestCase):
         self.assertEqual(evidence["generic_email"]["source_url"], "https://example.com/hidden-contact")
         self.assertEqual(fetch.call_count, 2)
         self.assertEqual(errors, [])
+
+    @patch.object(HtmlFetcher, "fetch")
+    def test_crawl_rejects_contacts_from_an_external_redirect(self, fetch):
+        fetch.return_value = FetchResult(
+            "https://booking-platform.example/contact",
+            '<a href="mailto:info@booking-platform.example">Email</a>',
+            False,
+            "http",
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ScraperConfig(
+                niche="salons",
+                location="London",
+                cache_dir=Path(temp_dir),
+                browser_fallback=False,
+            )
+            data, _evidence, errors = enrich_public_pages("https://salon.example/", config)
+
+        self.assertNotIn("emails", data)
+        self.assertIn("unrelated domain", errors[0])
+
+    @patch.object(HtmlFetcher, "fetch")
+    def test_crawl_stops_between_pages_when_cancelled(self, fetch):
+        pages = {
+            "https://example.com/": '<a href="/contact">Contact</a>',
+            "https://example.com/contact": '<a href="mailto:info@example.com">Email</a>',
+        }
+        fetch.side_effect = lambda url: FetchResult(url, pages[url], False, "http")
+        checks = iter([False, True])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ScraperConfig(
+                niche="salons",
+                location="London",
+                cache_dir=Path(temp_dir),
+                browser_fallback=False,
+            )
+            data, _evidence, errors = enrich_public_pages(
+                "https://example.com/",
+                config,
+                cancel_check=lambda: next(checks),
+            )
+
+        self.assertEqual(fetch.call_count, 1)
+        self.assertEqual(data["crawl_pages_checked"], 1)
+        self.assertEqual(errors, [])
+
+    @patch.object(HtmlFetcher, "fetch")
+    def test_later_generic_email_displaces_lower_priority_named_contacts(self, fetch):
+        pages = {
+            "https://example.com/": """
+                <a href="/contact">Contact</a>
+                <a href="mailto:alex@example.com">Alex</a>
+                <a href="mailto:beth@example.com">Beth</a>
+                <a href="mailto:casey@example.com">Casey</a>
+            """,
+            "https://example.com/contact": '<a href="mailto:info@example.com">Info</a>',
+        }
+        fetch.side_effect = lambda url: FetchResult(url, pages[url], False, "http")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = ScraperConfig(
+                niche="salons",
+                location="London",
+                cache_dir=Path(temp_dir),
+                browser_fallback=False,
+            )
+            data, evidence, _errors = enrich_public_pages("https://example.com/", config)
+
+        self.assertEqual(data["generic_email"], "info@example.com")
+        self.assertEqual(data["emails"], ["info@example.com", "alex@example.com", "beth@example.com"])
+        self.assertEqual(evidence["generic_email"]["source_url"], "https://example.com/contact")
+
+    @patch("app.enrichment._assert_public_url")
+    def test_fetch_text_rejects_a_gzip_document_that_expands_beyond_limit(self, _assert_url):
+        compressed = gzip.compress(b"x" * 5_000_001)
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                request=request,
+                headers={"content-type": "application/gzip"},
+                content=compressed,
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            fetcher = HtmlFetcher(
+                Path(temp_dir),
+                1,
+                0,
+                1,
+                browser_fallback=False,
+                transport=transport,
+            )
+            with self.assertRaisesRegex(ValueError, "5 MB"):
+                fetcher.fetch_text("https://example.com/sitemap.xml.gz")
+            fetcher.close()
 
     @patch.object(HtmlFetcher, "fetch")
     def test_adaptive_crawl_reports_progress_and_stops_after_contact_goal(self, fetch):

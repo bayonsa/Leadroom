@@ -9,7 +9,14 @@ from app.database import RunRepository
 from app.export import save_run
 from app.metrics import build_quality_metrics
 from app.models import RunSummary, ScrapeFailure
-from app.normalizer import attach_search_metadata, clean_leads, unique_phones
+from app.normalizer import (
+    attach_search_metadata,
+    clean_leads,
+    is_contactable_lead,
+    normalize_phone,
+    public_business_email,
+    unique_phones,
+)
 from app.scoring import explain_score, score_lead
 from app.scraper import scrape_business_site
 from app.search import search_business_sites
@@ -85,7 +92,10 @@ def run_pipeline(
                 cancelled = True
                 break
             raw_leads.append(lead)
-            repository.complete(candidate_id, lead)
+            if is_contactable_lead(lead):
+                repository.complete(candidate_id, lead)
+            else:
+                repository.complete_without_contact(candidate_id)
             print(f"Local lead {index}/{len(selected_sites)}: {lead['business_name']}")
             continue
 
@@ -100,6 +110,7 @@ def run_pipeline(
                     if not cancel_check or not cancel_check()
                     else None
                 ),
+                cancel_check=cancel_check,
             )
             if cancel_check and cancel_check():
                 cancelled = True
@@ -108,7 +119,10 @@ def run_pipeline(
                 _merge_osm_seed(lead, site)
             attach_search_metadata(lead, site)
             raw_leads.append(lead)
-            repository.complete(candidate_id, lead)
+            if is_contactable_lead(lead):
+                repository.complete(candidate_id, lead)
+            else:
+                repository.complete_without_contact(candidate_id)
             print(f"Done: {lead.get('business_name') or url}")
         except Exception as exc:
             if cancel_check and cancel_check():
@@ -164,14 +178,23 @@ def run_pipeline(
 
 
 def _lead_from_osm(site: dict[str, Any]) -> dict[str, Any]:
-    email = str(site.get("email") or "").strip().lower()
-    phone = str(site.get("phone") or "").strip()
+    website = str(site.get("homepage") or "")
+    email = public_business_email(site.get("email"), website)
+    phone = normalize_phone(site.get("phone"))
     source_url = str(site.get("osm_url") or "")
+    business_name = str(site.get("business_name") or site.get("title") or "")
+    city_or_area = str(site.get("city_or_area") or "")
+    verified_values = {
+        "business_name": business_name,
+        "generic_email": email,
+        "phone": phone,
+        "city_or_area": city_or_area,
+    }
     lead: dict[str, Any] = {
         "is_valid_lead": bool(site.get("business_name")),
-        "business_name": str(site.get("business_name") or site.get("title") or ""),
-        "website": str(site.get("homepage") or ""),
-        "city_or_area": str(site.get("city_or_area") or ""),
+        "business_name": business_name,
+        "website": website,
+        "city_or_area": city_or_area,
         "business_type": str(site.get("business_type") or ""),
         "services": [],
         "generic_email": email,
@@ -188,9 +211,9 @@ def _lead_from_osm(site: dict[str, Any]) -> dict[str, Any]:
         "search_snippet": str(site.get("snippet") or ""),
         "domain": str(site.get("domain") or ""),
         "field_evidence": {
-            key: {"value": lead_value(site, key), "source_url": source_url, "method": "osm-local"}
-            for key in ("business_name", "generic_email", "phone", "city_or_area")
-            if lead_value(site, key)
+            key: {"value": value, "source_url": source_url, "method": "osm-local"}
+            for key, value in verified_values.items()
+            if value
         },
         "enrichment_errors": [],
         "source": "osm_local",
@@ -220,12 +243,21 @@ def _merge_osm_seed(lead: dict[str, Any], site: dict[str, Any]) -> None:
     source_url = str(site.get("osm_url") or "")
     for target, source in mapping.items():
         value = str(site.get(source) or "").strip()
+        if target == "generic_email":
+            value = public_business_email(value, str(site.get("homepage") or lead.get("website") or ""))
+        elif target == "phone":
+            value = normalize_phone(value)
         if value and not lead.get(target):
             lead[target] = value
             evidence[target] = {"value": value, "source_url": source_url, "method": "osm-local"}
-    emails = [value for value in [lead.get("generic_email"), site.get("email")] if value]
-    phones = [value for value in [lead.get("phone"), site.get("phone")] if value]
+    osm_email = public_business_email(
+        site.get("email"),
+        str(site.get("homepage") or lead.get("website") or ""),
+    )
+    emails = [value for value in [lead.get("generic_email"), osm_email] if value]
+    phones = [value for value in [lead.get("phone"), normalize_phone(site.get("phone"))] if value]
     lead["emails"] = list(dict.fromkeys([*(lead.get("emails") or []), *emails]))[:3]
+    lead["generic_email"] = lead["emails"][0] if lead["emails"] else ""
     lead["phones"] = unique_phones([*(lead.get("phones") or []), *phones])
     lead["phone"] = lead["phones"][0] if lead["phones"] else ""
     lead["source"] = "hybrid"
@@ -233,8 +265,3 @@ def _merge_osm_seed(lead: dict[str, Any], site: dict[str, Any]) -> None:
     lead["address"] = str(site.get("address") or "")
     lead["lead_score"] = score_lead(lead)
     lead["lead_reason"] = explain_score(lead)
-
-
-def lead_value(site: dict[str, Any], key: str) -> Any:
-    source_key = {"generic_email": "email"}.get(key, key)
-    return site.get(source_key)

@@ -97,6 +97,16 @@ def domain_key(url: str) -> str:
     return f"{parsed.domain}.{parsed.suffix}".lower()
 
 
+def same_business_domain(first_url: str, second_url: str) -> bool:
+    first_key = domain_key(first_url)
+    second_key = domain_key(second_url)
+    if first_key and second_key:
+        return first_key == second_key
+    first_host = (urlparse(first_url).hostname or "").casefold()
+    second_host = (urlparse(second_url).hostname or "").casefold()
+    return bool(first_host and first_host == second_host)
+
+
 def homepage_url(url: str) -> str:
     parsed = urlparse(url or "")
     if not parsed.scheme or not parsed.netloc:

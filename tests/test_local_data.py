@@ -42,6 +42,22 @@ class LocalDataTests(TestCase):
         self.assertEqual(lead["phones"], ["020 7946 0102"])
         self.assertGreaterEqual(lead["lead_score"], 4)
 
+    def test_local_contacts_are_normalized_and_unrelated_email_is_rejected(self):
+        candidate = LocalDataService._candidate(
+            {
+                **OSM_ROW,
+                "website": "https://elmbeauty.co.uk/",
+                "email": "sales@unrelated.co.uk",
+                "phone": "tel:+44%2020%207946%200102",
+            }
+        )
+
+        lead = _lead_from_osm(candidate)
+
+        self.assertEqual(lead["generic_email"], "")
+        self.assertNotIn("generic_email", lead["field_evidence"])
+        self.assertEqual(lead["phones"], ["+44 20 7946 0102"])
+
     def test_hybrid_candidate_keeps_its_local_seed_for_enrichment(self):
         self.assertTrue(_has_local_seed({"source": "hybrid", "sources": ["web", "local"]}))
 

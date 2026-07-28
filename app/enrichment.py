@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gzip
 import hashlib
 import ipaddress
 import json
@@ -9,6 +8,8 @@ import re
 import socket
 import sys
 import time
+import uuid
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -22,7 +23,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 from app.config import ScraperConfig
-from app.filters import domain_key, homepage_url
+from app.filters import domain_key, homepage_url, same_business_domain
 from app.normalizer import (
     email_priority,
     normalize_phone,
@@ -238,9 +239,7 @@ class HtmlFetcher:
                     raise ValueError("Document exceeded the 5 MB safety limit")
                 content = response.content
                 if content.startswith(b"\x1f\x8b"):
-                    content = gzip.decompress(content)
-                    if len(content) > 5_000_000:
-                        raise ValueError("Expanded document exceeded the 5 MB safety limit")
+                    content = _decompress_gzip_limited(content, 5_000_000)
                 text = content.decode(response.encoding or "utf-8", errors="replace")
                 self._write_cache(url, str(response.url), text, "http-document")
                 return FetchResult(str(response.url), text, False, "http-document")
@@ -357,6 +356,8 @@ class HtmlFetcher:
                 html = page.content()
                 final_url = page.url
                 _assert_public_url(final_url)
+                if len(html.encode("utf-8")) > 5_000_000:
+                    raise ValueError("Browser HTML response exceeded the 5 MB safety limit")
                 browser.close()
         except PlaywrightError as exc:
             raise httpx.TransportError(f"Browser fallback failed: {exc}") from exc
@@ -383,15 +384,18 @@ class HtmlFetcher:
     def _write_cache(self, requested_url: str, final_url: str, html: str, method: str) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         path = self._cache_path(requested_url)
-        temp_path = path.with_suffix(".tmp")
+        temp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
         payload = {
             "fetched_at": datetime.now(UTC).isoformat(),
             "url": final_url,
             "html": html,
             "method": method,
         }
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        temp_path.replace(path)
+        try:
+            temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temp_path.replace(path)
+        finally:
+            temp_path.unlink(missing_ok=True)
 
 
 def _assert_public_url(url: str) -> None:
@@ -441,6 +445,7 @@ def discover_sitemap_links(
     base_url: str,
     limit: int,
     include_general: bool = False,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> list[str]:
     home = homepage_url(base_url)
     if not home:
@@ -457,6 +462,8 @@ def discover_sitemap_links(
     documents_seen: set[str] = set()
     scored: dict[str, int] = {}
     while sitemap_queue and len(documents_seen) < 4 and len(scored) < limit * 4:
+        if cancel_check and cancel_check():
+            break
         sitemap_url = sitemap_queue.pop(0)
         if sitemap_url in documents_seen:
             continue
@@ -552,6 +559,7 @@ def enrich_public_pages(
     url: str,
     config: ScraperConfig,
     progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    cancel_check: Callable[[], bool] | None = None,
 ) -> tuple[dict[str, Any], dict[str, dict[str, str]], list[str]]:
     fetcher = HtmlFetcher(
         cache_dir=config.cache_dir,
@@ -568,23 +576,28 @@ def enrich_public_pages(
     home = homepage_url(url)
     if home and home != url:
         queue.append((home, 0))
-    if config.crawl_mode in {"deep", "exhaustive"}:
-        sitemap_links = discover_sitemap_links(
-            fetcher,
-            home or url,
-            config.crawl_page_limit,
-            include_general=config.crawl_mode == "exhaustive",
-        )
-        queue.extend((link, 1) for link in sitemap_links)
     visited: set[str] = set()
     try:
+        if config.crawl_mode in {"deep", "exhaustive"}:
+            sitemap_links = discover_sitemap_links(
+                fetcher,
+                home or url,
+                config.crawl_page_limit,
+                include_general=config.crawl_mode == "exhaustive",
+                cancel_check=cancel_check,
+            )
+            queue.extend((link, 1) for link in sitemap_links)
         while queue and len(visited) < config.crawl_page_limit:
+            if cancel_check and cancel_check():
+                break
             link, depth = queue.pop(0)
             clean_link = link.split("#", 1)[0].rstrip("/") or link
             if clean_link in visited:
                 continue
             try:
                 page = fetcher.fetch(link)
+                if not same_business_domain(page.url, home or url):
+                    raise ValueError("Crawl page redirected to an unrelated domain")
                 final_link = page.url.split("#", 1)[0].rstrip("/") or page.url
                 if final_link in visited:
                     continue
@@ -784,13 +797,36 @@ def _merge(
     source_evidence: dict[str, dict[str, str]],
 ) -> None:
     for field, value in source.items():
-        if field in {"emails", "phones"} and isinstance(value, list):
+        if field == "emails" and isinstance(value, list):
             current = target.get(field) if isinstance(target.get(field), list) else []
-            target[field] = list(dict.fromkeys([*current, *value]))[:3]
+            target[field] = sorted(set([*current, *value]), key=email_priority)[:3]
             target_evidence.setdefault(field, source_evidence[field])
+            primary = target[field][0] if target[field] else ""
+            if primary and primary in value:
+                target["generic_email"] = primary
+                primary_evidence = source_evidence.get("generic_email") or source_evidence[field]
+                target_evidence["generic_email"] = primary_evidence
+        elif field == "phones" and isinstance(value, list):
+            current = target.get(field) if isinstance(target.get(field), list) else []
+            target[field] = unique_phones([*current, *value])
+            target_evidence.setdefault(field, source_evidence[field])
+            if target[field] and not target.get("phone"):
+                target["phone"] = target[field][0]
+                target_evidence["phone"] = source_evidence.get("phone") or source_evidence[field]
         elif value and not target.get(field):
             target[field] = value
             target_evidence[field] = source_evidence[field]
+
+
+def _decompress_gzip_limited(content: bytes, limit: int) -> bytes:
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    expanded = decompressor.decompress(content, limit + 1)
+    if len(expanded) > limit or decompressor.unconsumed_tail:
+        raise ValueError(f"Expanded document exceeded the {limit // 1_000_000} MB safety limit")
+    expanded += decompressor.flush()
+    if len(expanded) > limit:
+        raise ValueError(f"Expanded document exceeded the {limit // 1_000_000} MB safety limit")
+    return expanded
 
 
 def _clean_email(value: str) -> str:

@@ -30,7 +30,7 @@ high-severity defect caps the stage at 7.
 |---|---|---:|---:|---|
 | 0 | Shared baseline and quality gate | 6.5 | 6.5 | In progress |
 | 1 | Discovery, New Run, and run controls | 5.5 | 8.7 | Passed |
-| 2 | Enrichment, deep crawl, normalization, deduplication | TBD | TBD | Pending |
+| 2 | Enrichment, deep crawl, normalization, deduplication | 5.2 | 8.8 | Passed |
 | 3 | Repository, collections, editing, and export | TBD | TBD | Pending |
 | 4 | Outreach, compliance, drafts, and email delivery | TBD | TBD | Pending |
 | 5 | Settings, models, storage, themes, and branding | TBD | TBD | Pending |
@@ -87,6 +87,37 @@ ignoring the missing-model failure.
 - Final: **8.7/10**
 - Residual risk: a running HTTP/browser request cannot be forcibly interrupted;
   its result and progress are now discarded once its worker generation is stale.
+
+## Stage 2: Enrichment, Deep Crawl, and Contact Quality
+
+### Findings
+
+| ID | Severity | Defect | Fix | Regression |
+|---|---|---|---|---|
+| ENR-001 | High | A same-site URL could redirect to a booking platform or unrelated public domain and have that domain's contacts merged into the business lead. | Enforced registered-domain continuity for every crawl response and the HTML passed to the LLM. | `test_crawl_rejects_contacts_from_an_external_redirect`, `test_scraper_rejects_an_unrelated_redirect_before_llm` |
+| ENR-002 | High | Stop was checked only around the entire scrape, so a deep crawl could continue through dozens of pages after cancellation. | Propagated cancellation through sitemap traversal, page traversal, and the pre-LLM boundary. | `test_crawl_stops_between_pages_when_cancelled` |
+| ENR-003 | High | Raw OSM email and phone values bypassed web contact validation and normalization. Invalid evidence could remain attached to an empty field. | Applied domain-aware email validation, phone normalization, and evidence generation only after validation. | `test_local_contacts_are_normalized_and_unrelated_email_is_rejected` |
+| ENR-004 | Medium-high | Contact lists were truncated before the crawl finished, so three named addresses on the homepage could hide a later `info@` address. Cross-page phone formats were not identity-deduplicated. | Re-ranked merged email candidates and identity-deduplicated phones after every page while keeping evidence for the winning contact. | `test_later_generic_email_displaces_lower_priority_named_contacts`, existing UK phone normalization tests |
+| ENR-005 | Medium | Disabling adaptive fetching did not apply to the second HTML fetch used by the LLM. | Passed `advanced_fetching` to both fetchers. | `test_scraper_propagates_adaptive_setting_to_llm_source_fetch` |
+| ENR-006 | Medium | Results with no public email or phone were persisted as leads and displayed as `Not found / 0/10`. | Added terminal candidate state `no_contact`; diagnostic raw output remains available, but no Lead record is stored or shown. | `test_pipeline_does_not_persist_a_result_without_public_contacts` |
+| ENR-007 | Medium | Gzip sitemap expansion and browser HTML had incomplete size enforcement. | Added bounded gzip expansion and a 5 MB browser HTML limit. | `test_fetch_text_rejects_a_gzip_document_that_expands_beyond_limit` |
+| ENR-008 | Medium | Concurrent workers used the same cache temp filename and could race during atomic replacement. | Gave each cache writer a unique temporary path and retained atomic replacement. | Covered by atomic cache implementation; stress test remains desirable. |
+
+### Verification
+
+- 174 Python tests pass; 69 focused enrichment/pipeline/local/database/filter tests pass.
+- Ruff passes.
+- Frontend ESLint, production build, and Vitest pass with the new `No contact` state.
+
+### Score
+
+- Baseline: 5.2/10
+- Loop 1: 7.4/10
+- Loop 2: 8.8/10
+- Final: **8.8/10**
+- Residual risks: an in-flight network request stops at its timeout rather than
+  mid-socket; visible-text phone extraction remains UK-oriented, while explicit
+  `tel:` links and structured data support international formats.
 
 ## Stage Review Template
 
