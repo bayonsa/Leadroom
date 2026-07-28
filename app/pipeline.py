@@ -19,6 +19,7 @@ def run_pipeline(
     config: ScraperConfig,
     cancel_check: Callable[[], bool] | None = None,
     resume_run_id: str | None = None,
+    active_check: Callable[[], bool] | None = None,
 ) -> dict[str, Any]:
     repository = RunRepository(config.database_path)
     if resume_run_id:
@@ -71,12 +72,18 @@ def run_pipeline(
         if config.discovery_mode == "reuse" and config.reuse_existing_leads:
             cached_lead = repository.find_cached_lead(site["domain"], exclude_run_id=run_id)
             if cached_lead:
+                if cancel_check and cancel_check():
+                    cancelled = True
+                    break
                 raw_leads.append(cached_lead)
                 repository.complete(candidate_id, cached_lead)
                 print(f"Reused existing lead: {cached_lead.get('business_name') or url}")
                 continue
         if _has_local_seed(site) and not url:
             lead = _lead_from_osm(site)
+            if cancel_check and cancel_check():
+                cancelled = True
+                break
             raw_leads.append(lead)
             repository.complete(candidate_id, lead)
             print(f"Local lead {index}/{len(selected_sites)}: {lead['business_name']}")
@@ -88,11 +95,15 @@ def run_pipeline(
             lead = scrape_business_site(
                 url,
                 config,
-                progress_callback=lambda progress, claimed_id=candidate_id: repository.update_candidate_crawl(
-                    claimed_id,
-                    progress,
+                progress_callback=lambda progress, claimed_id=candidate_id: (
+                    repository.update_candidate_crawl(claimed_id, progress)
+                    if not cancel_check or not cancel_check()
+                    else None
                 ),
             )
+            if cancel_check and cancel_check():
+                cancelled = True
+                break
             if _has_local_seed(site):
                 _merge_osm_seed(lead, site)
             attach_search_metadata(lead, site)
@@ -100,6 +111,9 @@ def run_pipeline(
             repository.complete(candidate_id, lead)
             print(f"Done: {lead.get('business_name') or url}")
         except Exception as exc:
+            if cancel_check and cancel_check():
+                cancelled = True
+                break
             failed_urls.append(
                 ScrapeFailure(
                     url=url,
@@ -128,6 +142,10 @@ def run_pipeline(
         "failed_urls": failed_urls,
         "summary": summary,
     }
+
+    if active_check and not active_check():
+        repository.engine.dispose()
+        return output
 
     try:
         json_path, csv_path = save_run(output, config.output_dir, config.run_name)

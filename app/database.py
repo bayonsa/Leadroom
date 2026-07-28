@@ -730,8 +730,10 @@ class RunRepository:
             run = self._require_run(session, run_id)
             if run.status == "running":
                 raise ValueError("Run is already running")
-            if run.status == "cancelled":
-                raise ValueError("Cancelled runs must be retried before starting")
+            if run.status != "ready":
+                raise ValueError(f"Cannot start enrichment from {run.status} state")
+            if not any(row.status in {"queued", "failed"} for row in run.candidates):
+                raise ValueError("Select at least one candidate before starting enrichment")
             run.status = "running"
             run.updated_at = _now()
             self._event(session, run_id, "run_started", {})

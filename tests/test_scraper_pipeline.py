@@ -296,6 +296,52 @@ class ScraperPipelineTests(unittest.TestCase):
         scrape.assert_called_once()
         self.assertEqual(output["clean_leads"][0]["business_name"], "Refreshed")
 
+    @patch("app.pipeline.scrape_business_site")
+    def test_superseded_worker_does_not_write_lead_export_or_terminal_status(self, scrape):
+        site = {
+            "title": "Existing",
+            "url": "https://existing.co.uk/",
+            "homepage": "https://existing.co.uk/",
+            "snippet": "London salon",
+            "domain": "existing.co.uk",
+        }
+        scrape.return_value = self._lead("Stale result", site["homepage"], site["domain"])
+        checks = iter([False, True])
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            database_path = root / "test.db"
+            config = ScraperConfig(
+                niche="salons",
+                location="London",
+                output_dir=root / "exports",
+                database_path=database_path,
+                delay_seconds=0,
+            )
+            repository = RunRepository(database_path)
+            run_id = repository.create_run(config)
+            repository.add_candidates(run_id, [site])
+            repository.begin_run(run_id)
+            repository.engine.dispose()
+
+            run_pipeline(
+                config,
+                resume_run_id=run_id,
+                cancel_check=lambda: next(checks),
+                active_check=lambda: False,
+            )
+
+            repository = RunRepository(database_path)
+            status = repository.run_status(run_id)
+            candidates = repository.list_candidates(run_id)
+            leads = repository.load_leads(run_id)
+            repository.engine.dispose()
+            exports_created = (root / "exports").exists()
+
+        self.assertEqual(status["status"], "running")
+        self.assertEqual(candidates[0]["status"], "processing")
+        self.assertEqual(leads, [])
+        self.assertFalse(exports_created)
+
     @staticmethod
     def _lead(name: str, website: str, domain: str) -> dict:
         return {

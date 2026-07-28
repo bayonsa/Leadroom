@@ -550,10 +550,12 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     app.state.ollama_catalog_cache: dict[str, dict[str, Any]] = {}
     app.state.outreach_send_jobs: dict[str, dict[str, Any]] = {}
     app.state.discovery_jobs: dict[str, str] = {}
+    app.state.enrichment_jobs: dict[str, str] = {}
 
     @app.on_event("shutdown")
     def shutdown_workers() -> None:
         app.state.discovery_jobs.clear()
+        app.state.enrichment_jobs.clear()
         app.state.executor.shutdown(wait=False, cancel_futures=True)
 
     def schedule_discovery(
@@ -561,13 +563,33 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     ) -> None:
         token = str(uuid.uuid4())
         app.state.discovery_jobs[run_id] = token
-        app.state.executor.submit(
+        future = app.state.executor.submit(
             _execute_discovery,
             config,
             run_id,
             continuation,
             source,
             lambda: app.state.discovery_jobs.get(run_id) == token,
+        )
+        future.add_done_callback(
+            lambda _future: app.state.discovery_jobs.pop(run_id, None)
+            if app.state.discovery_jobs.get(run_id) == token
+            else None
+        )
+
+    def schedule_enrichment(config: ScraperConfig, run_id: str) -> None:
+        token = str(uuid.uuid4())
+        app.state.enrichment_jobs[run_id] = token
+        future = app.state.executor.submit(
+            _execute_run,
+            config,
+            run_id,
+            lambda: app.state.enrichment_jobs.get(run_id) == token,
+        )
+        future.add_done_callback(
+            lambda _future: app.state.enrichment_jobs.pop(run_id, None)
+            if app.state.enrichment_jobs.get(run_id) == token
+            else None
         )
 
     recovery = ComplianceService(database_path)
@@ -1575,7 +1597,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
             repo.begin_run(run_id)
         finally:
             repo.engine.dispose()
-        app.state.executor.submit(_execute_run, config, run_id)
+        schedule_enrichment(config, run_id)
         return {"run_id": run_id, "status": "accepted"}
 
     @app.put("/api/v1/runs/{run_id}/candidates/{domain}")
@@ -1610,8 +1632,12 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     @app.post("/api/v1/runs/{run_id}/cancel")
     def cancel_run(run_id: str) -> dict[str, Any]:
         app.state.discovery_jobs.pop(run_id, None)
+        app.state.enrichment_jobs.pop(run_id, None)
         repo = repository()
         try:
+            status = repo.run_status(run_id)["status"]
+            if status not in {"searching", "running"}:
+                raise ValueError(f"Cannot stop a run in {status} state")
             repo.finish_run(run_id, "stopped", {"reason": "Stopped by user"})
             return repo.run_status(run_id)
         finally:
@@ -1638,7 +1664,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         finally:
             repo.engine.dispose()
         if kind == "enrichment":
-            app.state.executor.submit(_execute_run, config, run_id)
+            schedule_enrichment(config, run_id)
         else:
             schedule_discovery(config, run_id, continuation)
         return {"run_id": run_id, "status": "accepted", "kind": kind, "recovered": recovered}
@@ -1646,6 +1672,7 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     @app.delete("/api/v1/runs/{run_id}")
     def delete_run(run_id: str) -> dict[str, str]:
         app.state.discovery_jobs.pop(run_id, None)
+        app.state.enrichment_jobs.pop(run_id, None)
         repo = repository()
         try:
             status = repo.run_status(run_id)["status"]
@@ -1660,10 +1687,15 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
         repo = repository()
         try:
             config = repo.load_config(run_id)
+            status = repo.run_status(run_id)
+            if status["status"] in {"searching", "running"}:
+                raise ValueError(f"Run is already {status['status']}")
+            if not status["counts"].get("failed") and not status["counts"].get("processing"):
+                raise ValueError("This run has no failed or interrupted candidates to retry")
             recovered = repo.recover_for_resume(run_id)
         finally:
             repo.engine.dispose()
-        app.state.executor.submit(_execute_run, config, run_id)
+        schedule_enrichment(config, run_id)
         return {"run_id": run_id, "status": "accepted", "recovered": recovered}
 
     @app.get("/api/v1/runs/{run_id}/events", response_class=EventSourceResponse)
@@ -1715,13 +1747,19 @@ def create_app(database_path: Path | None = None, frontend_dir: Path | None = No
     return app
 
 
-def _execute_run(config: ScraperConfig, run_id: str) -> None:
+def _execute_run(
+    config: ScraperConfig,
+    run_id: str,
+    active_check: Callable[[], bool] | None = None,
+) -> None:
     repo = RunRepository(config.database_path)
     try:
         run_pipeline(
             config,
             resume_run_id=run_id,
-            cancel_check=lambda: repo.is_cancelled(run_id),
+            cancel_check=lambda: repo.is_cancelled(run_id)
+            or bool(active_check and not active_check()),
+            active_check=active_check,
         )
     finally:
         repo.engine.dispose()

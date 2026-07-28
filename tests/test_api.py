@@ -120,8 +120,48 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(diagnostics["database"], "ok")
         self.assertEqual(diagnostics["configuration"]["niche"], "salons")
         self.assertTrue(diagnostics["events"])
+        self.app.state.executor.submit = MagicMock()
+        self.assertEqual(self.client.post(f"/api/v1/runs/{run_id}/start").status_code, 202)
         cancelled = self.client.post(f"/api/v1/runs/{run_id}/cancel").json()
         self.assertEqual(cancelled["status"], "stopped")
+
+    def test_run_actions_reject_invalid_and_duplicate_states(self):
+        repo = RunRepository(self.database_path)
+        config = ScraperConfig(niche="salons", location="London", database_path=self.database_path)
+        run_id = repo.create_run(config)
+        repo.engine.dispose()
+        self.app.state.executor.submit = MagicMock()
+
+        start_searching = self.client.post(f"/api/v1/runs/{run_id}/start")
+        retry_searching = self.client.post(f"/api/v1/runs/{run_id}/retry")
+        self.assertEqual(start_searching.status_code, 409)
+        self.assertEqual(retry_searching.status_code, 409)
+
+        repo = RunRepository(self.database_path)
+        repo.add_candidates(run_id, [SITE])
+        repo.engine.dispose()
+        self.assertEqual(self.client.post(f"/api/v1/runs/{run_id}/start").status_code, 202)
+        self.assertEqual(self.client.post(f"/api/v1/runs/{run_id}/start").status_code, 409)
+        self.assertEqual(self.client.post(f"/api/v1/runs/{run_id}/retry").status_code, 409)
+
+        self.assertEqual(self.client.post(f"/api/v1/runs/{run_id}/cancel").status_code, 200)
+        self.assertEqual(self.client.post(f"/api/v1/runs/{run_id}/cancel").status_code, 409)
+        retry_without_failures = self.client.post(f"/api/v1/runs/{run_id}/retry")
+        self.assertEqual(retry_without_failures.status_code, 409)
+        self.assertIn("no failed or interrupted", retry_without_failures.json()["cause"].lower())
+
+    def test_start_rejects_a_ready_run_without_selected_candidates(self):
+        repo = RunRepository(self.database_path)
+        config = ScraperConfig(niche="salons", location="London", database_path=self.database_path)
+        run_id = repo.create_run(config)
+        repo.add_candidates(run_id, [SITE])
+        repo.set_candidate_selected(run_id, SITE["domain"], False)
+        repo.engine.dispose()
+
+        response = self.client.post(f"/api/v1/runs/{run_id}/start")
+
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("select at least one candidate", response.json()["cause"].lower())
 
     def test_validation_and_missing_run_use_actionable_problem_shape(self):
         invalid = self.client.post("/api/v1/runs", json={"niche": "", "location": "London"})
